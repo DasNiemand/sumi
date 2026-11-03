@@ -13,7 +13,8 @@
 | Log | `/tmp/sumi.log` (hub), `/tmp/sumi-<id>.log` (app) |
 
 ## 2. Lệnh
-`sumi` (mở hub), `sumi <app> [function]`, `sumi reset`, `sumi update`, `sumi uninstall`.
+`sumi` (mở hub), `sumi <app> [function]`, `sumi reset`, `sumi config apply|backups|restore`, `sumi update`, `sumi uninstall`.
+`sumi config apply <json|->` kiểm cấu trúc, giữ `sumi.lock`, sao lưu `backups/<stamp>/config.json`, ghi file tạm rồi `mv` (nguyên tử), giữ tối đa `hub.maxBackups` bản (mặc định 20). Hub ghi config chỉ qua lệnh này.
 Alias chuyển tiếp `clockwidget` và `confirm` giữ trong thời gian chuyển đổi.
 
 ## 3. Config
@@ -29,10 +30,22 @@ Alias chuyển tiếp `clockwidget` và `confirm` giữ trong thời gian chuy�
 - **Font theo vai trò:** `title, label, data, numeral, kanji`. Mặc định giữ nguyên giao diện hiện tại: `title`=sans, `label`=sans, `data`=mono, `numeral`=mono, `kanji`=sans.
 
 ## 4. Theme
-- `colors.json` chứa palette thô. Màu cuối tính lúc chạy trong `lib/Theme.qml` theo preset: `paper, ink, mono-white, mono-black, accent, follow`.
-- Công thức cụ thể (cặp paper/ink của từng preset, mix cho soft/rule/wash/ghostB) lấy từ code hiện tại ở GĐ1. Không đổi công thức ở GĐ0.
-- `danger` là màu cố định, không derive.
-- Tương phản ink/paper theo WCAG: `(L1 + 0.05) / (L2 + 0.05)` với L là độ sáng tương đối. **Dưới 4.5 chặn Apply, dưới 7 cảnh báo.**
+- `colors.json` chứa palette thô. Màu cuối tính lúc chạy trong `lib/SumiTheme.qml` theo preset (`theme` trong config): `paper, ink, mono-white, mono-black, accent, follow`. Mặc định `paper`.
+- Cặp giấy/mực của từng preset (L = palette sáng hơn trong surface/on_surface, D = tối hơn, A = primary; `soft/rule/wash` luôn là mix ink→paper 0.42/0.58/0.90):
+
+| Preset | paper | ink |
+|---|---|---|
+| `paper` (công thức gốc, giữ nguyên) | `tint(darker(L,1.16), A·tint)` | `darker(D, inkDarken)` |
+| `ink` | `tint(darker(D,1.25), A·tint)` | `lighter(L, 1+(inkDarken-1)·0.2)` |
+| `mono-white` | xám cùng độ sáng với `darker(L,1.16)` | xám cùng độ sáng với `darker(D,inkDarken)` |
+| `mono-black` | xám cùng độ sáng với `darker(D,1.25)` | xám cùng độ sáng với ink của `ink` |
+| `accent` | `mix(darker(L,1.16), A, 0.22+tint·0.5)` | `darker(mix(D,A,0.28), inkDarken)` |
+| `follow` | palette tối thì như `ink`, sáng thì như `paper` | |
+
+- `danger` là màu cố định `#E63946` (`SumiTheme.danger`), không derive.
+- Tương phản ink/paper theo WCAG: `(L1 + 0.05) / (L2 + 0.05)` với L là độ sáng tương đối (có linearize sRGB). **Dưới 4.5 chặn Apply, dưới 7 cảnh báo.**
+- Runtime: app lỗi tương phản (< 4.5, ví dụ sửa tay config) thì `SumiTheme` tự rơi về `paper` (`fellBack`), không bao giờ vẽ chữ không đọc được.
+- Hub ghi theme ở 3 phạm vi: `global`, `hub` (chỉ `hub.theme`; tint/inkDarken lấy của global), và từng app (`apps.<id>`). Thiếu key = kế thừa phạm vi cha.
 
 ## 5. Quy tắc phím
 - Escape luôn là `cancel`, locked, không gán lại.
