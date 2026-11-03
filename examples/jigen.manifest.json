@@ -1,0 +1,34 @@
+{
+  "id": "jigen",
+  "name": "JIGEN 時限",
+  "kanji": "時限",
+  "description": "Shutdown, reboot, timer và countdown card.",
+  "version": "1.0.0",
+  "requires_lib": ">=1.0 <2.0",
+  "config_version": 1,
+  "run": "qs -p {dir}/shell.qml",
+  "ipc_target": "sumi-jigen",
+  "functions": [
+    { "id": "shutdown", "label": "SHUTDOWN", "objects": ["globe", "cube"], "defaultObject": "globe" },
+    { "id": "reboot", "label": "REBOOT", "objects": ["globe"], "defaultObject": "globe" },
+    { "id": "timer", "label": "TIMER", "objects": ["globe"], "defaultObject": "globe" },
+    { "id": "countdown", "label": "COUNTDOWN", "objects": ["globe"], "defaultObject": "globe" }
+  ],
+  "options": [
+    { "key": "shutdown.defaultFunction", "type": "enum", "default": "shutdown",
+      "values": ["shutdown", "reboot", "timer"], "label": "DEFAULT FUNCTION" },
+    { "key": "shutdown.timerPresets", "type": "intlist", "default": [5, 15, 30, 60],
+      "min": 1, "max": 240, "label": "TIMER PRESETS" }
+  ],
+  "keybinds": [
+    { "action": "nav.left", "default": "A", "label": "LEFT" },
+    { "action": "nav.right", "default": "D", "label": "RIGHT" },
+    { "action": "switchFunction.prev", "default": "Q", "label": "PREV FUNCTION" },
+    { "action": "switchFunction.next", "default": "E", "label": "NEXT FUNCTION" },
+    { "action": "confirm", "default": "Return", "label": "CONFIRM" },
+    { "action": "cancel", "default": "Escape", "label": "CANCEL", "locked": true }
+  ],
+  "fonts": ["title", "label", "data", "numeral", "kanji"],
+  "requires": ["noto-fonts-cjk"],
+  "shell_commands": ["systemctl poweroff", "systemctl reboot"]
+}

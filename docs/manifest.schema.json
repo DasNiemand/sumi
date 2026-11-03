@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "sumi/manifest.schema.json",
+  "title": "SUMI app manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "version", "requires_lib", "config_version", "run", "ipc_target",
+               "functions", "options", "keybinds", "fonts", "requires", "shell_commands"],
+  "definitions": {
+    "ident": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
+    "dotkey": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9]*(\\.[a-zA-Z][a-zA-Z0-9]*)*$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" }
+  },
+  "properties": {
+    "id": { "$ref": "#/definitions/ident" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "kanji": { "type": "string", "maxLength": 8 },
+    "description": { "type": "string", "maxLength": 200 },
+    "version": { "$ref": "#/definitions/semver" },
+    "requires_lib": {
+      "type": "string",
+      "description": "Khoảng semver của lib/, ví dụ \">=1.0 <2.0\"",
+      "pattern": "^(>=|>|<=|<|=)?[0-9]+\\.[0-9]+(\\.[0-9]+)?( (>=|>|<=|<|=)?[0-9]+\\.[0-9]+(\\.[0-9]+)?)*$"
+    },
+    "config_version": { "type": "integer", "minimum": 1 },
+    "run": {
+      "type": "string",
+      "description": "Lệnh chạy app, {dir} là thư mục app. Không được chứa '..'.",
+      "pattern": "^[^\\n]+$"
+    },
+    "ipc_target": { "type": "string", "pattern": "^sumi-[a-z0-9-]+$" },
+    "functions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "objects", "defaultObject"],
+        "properties": {
+          "id": { "$ref": "#/definitions/ident" },
+          "label": { "type": "string", "maxLength": 24 },
+          "objects": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/ident" } },
+          "defaultObject": { "$ref": "#/definitions/ident" }
+        }
+      }
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "type", "default", "label"],
+        "properties": {
+          "key": { "$ref": "#/definitions/dotkey" },
+          "type": { "enum": ["bool", "int", "float", "enum", "intlist", "string"] },
+          "default": {},
+          "min": { "type": "number" },
+          "max": { "type": "number" },
+          "values": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string" } },
+          "label": { "type": "string", "maxLength": 32 },
+          "locked": { "type": "boolean", "description": "true: hub không cho đổi khỏi mặc định" }
+        },
+        "allOf": [
+          { "if": { "properties": { "type": { "enum": ["int", "float", "intlist"] } } },
+            "then": { "required": ["min", "max"] } },
+          { "if": { "properties": { "type": { "const": "enum" } } },
+            "then": { "required": ["values"] } },
+          { "if": { "properties": { "type": { "const": "bool" } } },
+            "then": { "properties": { "default": { "type": "boolean" } } } },
+          { "if": { "properties": { "type": { "const": "int" } } },
+            "then": { "properties": { "default": { "type": "integer" } } } },
+          { "if": { "properties": { "type": { "const": "float" } } },
+            "then": { "properties": { "default": { "type": "number" } } } },
+          { "if": { "properties": { "type": { "const": "intlist" } } },
+            "then": { "properties": { "default": { "type": "array", "items": { "type": "integer" } } } } },
+          { "if": { "properties": { "type": { "enum": ["enum", "string"] } } },
+            "then": { "properties": { "default": { "type": "string" } } } }
+        ]
+      }
+    },
+    "keybinds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "default", "label"],
+        "properties": {
+          "action": { "$ref": "#/definitions/dotkey" },
+          "default": { "type": "string", "minLength": 1, "maxLength": 20 },
+          "label": { "type": "string", "maxLength": 32 },
+          "locked": { "type": "boolean", "description": "true: không gán lại được (ví dụ Escape)" }
+        }
+      }
+    },
+    "fonts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["title", "label", "data", "numeral", "kanji"] }
+    },
+    "requires": {
+      "type": "array",
+      "description": "Gói hệ thống cần có. Chỉ để báo thiếu, hub không tự cài.",
+      "items": { "type": "string", "maxLength": 64 }
+    },
+    "shell_commands": {
+      "type": "array",
+      "description": "Mọi lệnh shell mà app có thể chạy. Hub hiển thị ở màn hình xác nhận cài. Rỗng nếu không có.",
+      "items": { "type": "string", "maxLength": 200 }
+    }
+  }
+}

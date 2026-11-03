@@ -1,0 +1,238 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "sumi/config.schema.json",
+  "title": "SUMI config.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "global"
+  ],
+  "definitions": {
+    "theme": {
+      "enum": [
+        "paper",
+        "ink",
+        "mono-white",
+        "mono-black",
+        "accent",
+        "follow"
+      ]
+    },
+    "fonts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "numeral": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "kanji": {
+          "type": "string",
+          "maxLength": 80
+        }
+      }
+    },
+    "look": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "theme": {
+          "$ref": "#/definitions/theme"
+        },
+        "tint": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.6
+        },
+        "inkDarken": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 2.5
+        },
+        "noise": {
+          "type": "boolean"
+        },
+        "scanlines": {
+          "type": "boolean"
+        },
+        "scanlineOpacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.2
+        },
+        "glitch": {
+          "type": "boolean"
+        },
+        "crtBootMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
+        },
+        "crtOutroMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
+        },
+        "scaleBoost": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 2
+        },
+        "fonts": {
+          "$ref": "#/definitions/fonts"
+        }
+      }
+    }
+  },
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "global": {
+      "$ref": "#/definitions/look"
+    },
+    "hub": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "theme": {
+          "$ref": "#/definitions/theme"
+        },
+        "registryUrl": {
+          "type": "string",
+          "pattern": "^https://raw\\.githubusercontent\\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$"
+        },
+        "checkUpdateHours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 168
+        },
+        "maxBackups": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 100
+        },
+        "autoRevert": {
+          "type": "boolean"
+        },
+        "autoRevertSec": {
+          "enum": [
+            10,
+            15,
+            30
+          ]
+        }
+      }
+    },
+    "apps": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]{1,31}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "theme": {
+            "$ref": "#/definitions/theme"
+          },
+          "tint": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.6
+          },
+          "inkDarken": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 2.5
+          },
+          "noise": {
+            "type": "boolean"
+          },
+          "scanlines": {
+            "type": "boolean"
+          },
+          "scanlineOpacity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.2
+          },
+          "glitch": {
+            "type": "boolean"
+          },
+          "crtBootMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3000
+          },
+          "crtOutroMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3000
+          },
+          "scaleBoost": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 2
+          },
+          "fonts": {
+            "$ref": "#/definitions/fonts"
+          },
+          "config_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "options": {
+            "type": "object"
+          },
+          "objects": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{1,31}$"
+                },
+                "speed": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "grid": {
+                  "type": "integer",
+                  "minimum": 44,
+                  "maximum": 56
+                },
+                "interactive": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "keybinds": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 20
+            }
+          }
+        }
+      }
+    }
+  }
+}

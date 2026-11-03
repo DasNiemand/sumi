@@ -1,0 +1,27 @@
+{
+  "id": "kakunin",
+  "name": "KAKUNIN 確認",
+  "kanji": "確認",
+  "description": "Hỏi xác nhận trước khi đóng app. Exit code 0 = yes, 1 = no.",
+  "version": "1.0.0",
+  "requires_lib": ">=1.0 <2.0",
+  "config_version": 1,
+  "run": "qs -p {dir}/shell.qml",
+  "ipc_target": "sumi-kakunin",
+  "functions": [
+    { "id": "confirm", "label": "CONFIRM", "objects": ["default"], "defaultObject": "default" }
+  ],
+  "options": [
+    { "key": "defaultNo", "type": "bool", "default": true, "label": "DEFAULT NO", "locked": true },
+    { "key": "acceptKeysDelayMs", "type": "int", "default": 180, "min": 0, "max": 1000, "label": "KEY DELAY MS" }
+  ],
+  "keybinds": [
+    { "action": "yes", "default": "Y", "label": "YES" },
+    { "action": "no", "default": "N", "label": "NO" },
+    { "action": "confirm", "default": "Return", "label": "CONFIRM" },
+    { "action": "cancel", "default": "Escape", "label": "CANCEL", "locked": true }
+  ],
+  "fonts": ["title", "label", "data", "kanji"],
+  "requires": ["noto-fonts-cjk"],
+  "shell_commands": []
+}

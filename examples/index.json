@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "apps": [
+    { "id": "kakunin", "repo": "github.com/DasNiemand/sumi-kakunin", "ref": "v1.0.0",
+      "sha": "0000000000000000000000000000000000000000" },
+    { "id": "jigen", "repo": "github.com/DasNiemand/sumi-jigen", "ref": "v1.0.0",
+      "sha": "0000000000000000000000000000000000000000" }
+  ]
+}
