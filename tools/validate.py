@@ -29,7 +29,7 @@ def manifest_rules(m):
     ids = [f["id"] for f in m["functions"]]
     if len(ids) != len(set(ids)): e.append("functions: id trùng")
     for f in m["functions"]:
-        if f["defaultObject"] not in f["objects"]:
+        if "defaultObject" in f and f["defaultObject"] not in f["objects"]:
             e.append(f"functions/{f['id']}: defaultObject không nằm trong objects")
     keys = [o["key"] for o in m["options"]]
     if len(keys) != len(set(keys)): e.append("options: key trùng")
@@ -47,6 +47,10 @@ def manifest_rules(m):
     if not cancel or cancel[0]["default"] != "Escape" or not cancel[0].get("locked"):
         e.append("keybinds: bắt buộc có action 'cancel' = Escape và locked")
     if "{dir}" not in m["run"]: e.append("run: thiếu {dir}")
+    for o in m["options"]:
+        if o["key"] == "timer.defaultMinutes":
+            pr = next((x for x in m["options"] if x["key"] == "timer.presets"), None)
+            if pr and o["default"] not in pr["default"]: e.append("timer.defaultMinutes phải nằm trong timer.presets mặc định")
     if m["ipc_target"] != f"sumi-{m['id']}": e.append("ipc_target phải là sumi-<id>")
     e += no_dotdot({k: v for k, v in m.items() if k != "description"})
     return e

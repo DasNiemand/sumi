@@ -1,23 +1,41 @@
 {
   "version": 1,
   "global": {
-    "theme": "paper", "tint": 0.12, "inkDarken": 1.5, "noise": true,
-    "scanlines": true, "scanlineOpacity": 0.05, "glitch": true,
-    "crtBootMs": 850, "crtOutroMs": 460, "scaleBoost": 1.0
+    "theme": "paper",
+    "tint": 0.12,
+    "inkDarken": 1.5,
+    "scanlines": true,
+    "scanlineOpacity": 0.05,
+    "glitch": true,
+    "scaleBoost": 1.0
   },
   "hub": {
     "theme": "paper",
     "registryUrl": "https://raw.githubusercontent.com/DasNiemand/sumi-index/main/index.json",
-    "checkUpdateHours": 6, "maxBackups": 20, "autoRevert": false, "autoRevertSec": 15
+    "checkUpdateHours": 6,
+    "maxBackups": 20,
+    "autoRevert": false,
+    "autoRevertSec": 15
   },
   "apps": {
     "jigen": {
       "config_version": 1,
       "theme": "ink",
-      "fonts": { "numeral": "JetBrains Mono" },
-      "options": { "shutdown.timerPresets": [10, 20, 45] },
-      "objects": { "shutdown": { "id": "cube", "speed": 1.0, "grid": 48, "interactive": true } },
-      "keybinds": { "nav.left": "H", "nav.right": "L" }
+      "fonts": {
+        "numeral": "JetBrains Mono"
+      },
+      "options": {
+        "timer.presets": [
+          10,
+          20,
+          45
+        ],
+        "timer.defaultMinutes": 20
+      },
+      "keybinds": {
+        "nav.left": "H",
+        "nav.right": "L"
+      }
     }
   }
 }

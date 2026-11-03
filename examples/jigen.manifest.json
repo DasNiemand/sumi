@@ -2,33 +2,198 @@
   "id": "jigen",
   "name": "JIGEN 時限",
   "kanji": "時限",
-  "description": "Shutdown, reboot, timer và countdown card.",
+  "description": "Shutdown, reboot và hẹn giờ tắt máy. Giữ trạng thái khi đang đếm giờ.",
   "version": "1.0.0",
+  "kind": "daemon",
   "requires_lib": ">=1.0 <2.0",
   "config_version": 1,
   "run": "qs -p {dir}/shell.qml",
   "ipc_target": "sumi-jigen",
+  "ipc_aliases": [
+    "clock-widget"
+  ],
   "functions": [
-    { "id": "shutdown", "label": "SHUTDOWN", "objects": ["globe", "cube"], "defaultObject": "globe" },
-    { "id": "reboot", "label": "REBOOT", "objects": ["globe"], "defaultObject": "globe" },
-    { "id": "timer", "label": "TIMER", "objects": ["globe"], "defaultObject": "globe" },
-    { "id": "countdown", "label": "COUNTDOWN", "objects": ["globe"], "defaultObject": "globe" }
+    {
+      "id": "shutdown",
+      "label": "SHUTDOWN",
+      "objects": []
+    },
+    {
+      "id": "reboot",
+      "label": "REBOOT",
+      "objects": []
+    },
+    {
+      "id": "timer",
+      "label": "TIMER",
+      "ipc_name": "shutdown30",
+      "objects": []
+    }
   ],
   "options": [
-    { "key": "shutdown.defaultFunction", "type": "enum", "default": "shutdown",
-      "values": ["shutdown", "reboot", "timer"], "label": "DEFAULT FUNCTION" },
-    { "key": "shutdown.timerPresets", "type": "intlist", "default": [5, 15, 30, 60],
-      "min": 1, "max": 240, "label": "TIMER PRESETS" }
+    {
+      "key": "timer.presets",
+      "type": "intlist",
+      "default": [
+        5,
+        15,
+        30,
+        60
+      ],
+      "min": 1,
+      "max": 240,
+      "label": "TIMER PRESETS (MIN)"
+    },
+    {
+      "key": "timer.defaultMinutes",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 240,
+      "label": "DEFAULT MINUTES"
+    },
+    {
+      "key": "timer.warningSec",
+      "type": "int",
+      "default": 90,
+      "min": 30,
+      "max": 300,
+      "label": "FINAL WARNING SEC"
+    },
+    {
+      "key": "timer.nearEndSec",
+      "type": "int",
+      "default": 120,
+      "min": 30,
+      "max": 600,
+      "label": "NEAR-END ALERT SEC"
+    },
+    {
+      "key": "acceptHoldMs",
+      "type": "int",
+      "default": 2500,
+      "min": 500,
+      "max": 6000,
+      "label": "HOLD AFTER YES MS"
+    },
+    {
+      "key": "acceptKeysDelayMs",
+      "type": "int",
+      "default": 180,
+      "min": 0,
+      "max": 1000,
+      "label": "KEY GUARD MS"
+    },
+    {
+      "key": "dither.pixelSize",
+      "type": "int",
+      "default": 20,
+      "min": 8,
+      "max": 48,
+      "label": "DITHER PIXEL"
+    },
+    {
+      "key": "dither.noise",
+      "type": "float",
+      "default": 0.32,
+      "min": 0,
+      "max": 1,
+      "label": "DITHER NOISE"
+    },
+    {
+      "key": "dither.revealMs",
+      "type": "int",
+      "default": 480,
+      "min": 100,
+      "max": 2000,
+      "label": "DITHER REVEAL MS"
+    },
+    {
+      "key": "crtBootMs",
+      "type": "int",
+      "default": 900,
+      "min": 0,
+      "max": 3000,
+      "label": "CRT BOOT MS"
+    },
+    {
+      "key": "crtOutroMs",
+      "type": "int",
+      "default": 460,
+      "min": 0,
+      "max": 3000,
+      "label": "CRT OUTRO MS"
+    }
   ],
   "keybinds": [
-    { "action": "nav.left", "default": "A", "label": "LEFT" },
-    { "action": "nav.right", "default": "D", "label": "RIGHT" },
-    { "action": "switchFunction.prev", "default": "Q", "label": "PREV FUNCTION" },
-    { "action": "switchFunction.next", "default": "E", "label": "NEXT FUNCTION" },
-    { "action": "confirm", "default": "Return", "label": "CONFIRM" },
-    { "action": "cancel", "default": "Escape", "label": "CANCEL", "locked": true }
+    {
+      "action": "yes",
+      "default": "Y",
+      "label": "YES"
+    },
+    {
+      "action": "no",
+      "default": "N",
+      "label": "NO"
+    },
+    {
+      "action": "nav.left",
+      "default": "A",
+      "label": "LEFT"
+    },
+    {
+      "action": "nav.right",
+      "default": "D",
+      "label": "RIGHT"
+    },
+    {
+      "action": "nav.up",
+      "default": "W",
+      "label": "UP"
+    },
+    {
+      "action": "nav.down",
+      "default": "S",
+      "label": "DOWN"
+    },
+    {
+      "action": "fn.prev",
+      "default": "Q",
+      "label": "PREV FUNCTION"
+    },
+    {
+      "action": "fn.next",
+      "default": "E",
+      "label": "NEXT FUNCTION"
+    },
+    {
+      "action": "confirm",
+      "default": "Return",
+      "label": "CONFIRM"
+    },
+    {
+      "action": "cancel",
+      "default": "Escape",
+      "label": "CANCEL",
+      "locked": true
+    }
   ],
-  "fonts": ["title", "label", "data", "numeral", "kanji"],
-  "requires": ["noto-fonts-cjk"],
-  "shell_commands": ["systemctl poweroff", "systemctl reboot"]
+  "fonts": [
+    "title",
+    "label",
+    "data",
+    "numeral",
+    "kanji"
+  ],
+  "requires": [
+    "noto-fonts-cjk"
+  ],
+  "shell_commands": [
+    "systemctl poweroff",
+    "systemctl reboot",
+    "hyprctl dispatch dpms off",
+    "hyprctl dispatch dpms on",
+    "hyprctl cursorpos",
+    "sh -c (đọc /proc và /sys cho màn hình phụ)"
+  ]
 }

@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# sumi <app> [function]   chạy app (oneshot: chạy thẳng; daemon: khởi động nếu cần rồi gọi IPC)
+# sumi reset [--force]    sao lưu rồi xoá config.json (về mặc định)
+# sumi doctor             kiểm tra môi trường
+#
+# Không phụ thuộc hub: app oneshot (kakunin) được gọi từ script nên phải chạy nhanh, không đụng mạng.
+set -u
+
+SUMI_HOME="${SUMI_HOME:-$HOME/.local/share/sumi}"
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sumi"
+
+die() { echo "sumi: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "thiếu lệnh '$1'"; }
+
+manifest_field() { jq -r "$2 // empty" "$1/manifest.json" 2>/dev/null; }
+
+run_argv() {  # $1 = app dir ; in argv (mỗi phần tử một dòng) với {dir} đã thay
+    local dir="$1" run
+    run="$(manifest_field "$dir" '.run')"
+    [ -n "$run" ] || return 1
+    local -a argv
+    read -ra argv <<<"$run"
+    local i
+    for i in "${!argv[@]}"; do argv[$i]="${argv[$i]//\{dir\}/$dir}"; done
+    printf '%s\n' "${argv[@]}"
+}
+
+cmd_reset() {
+    local force=0
+    [ "${1:-}" = "--force" ] && force=1
+    local f="$CFG_DIR/config.json"
+    [ -f "$f" ] || { echo "sumi: không có config.json, đã ở mặc định."; return 0; }
+    if [ "$force" -eq 0 ] && pgrep -f "$SUMI_HOME/apps/[a-z0-9-]*/shell.qml" >/dev/null 2>&1; then
+        die "có app SUMI đang chạy. Tắt app trước, hoặc dùng: sumi reset --force"
+    fi
+    local ts dst
+    ts="$(date +%Y%m%d-%H%M%S)"; dst="$CFG_DIR/backups/$ts"
+    mkdir -p "$dst" && cp -a "$f" "$dst/config.json" && rm -f "$f" || die "reset thất bại, config giữ nguyên"
+    echo "sumi: đã sao lưu vào $dst và xoá config.json (về mặc định)."
+}
+
+cmd_doctor() {
+    local ok=1
+    for c in jq quickshell qs hyprctl; do
+        if command -v "$c" >/dev/null 2>&1; then echo "ok    $c"; else echo "THIẾU $c"; ok=0; fi
+    done
+    [ -d "$SUMI_HOME/lib" ] && echo "ok    lib: $SUMI_HOME/lib" || { echo "THIẾU lib: $SUMI_HOME/lib"; ok=0; }
+    [ -f "$CFG_DIR/colors.json" ] && echo "ok    colors.json" || echo "chưa có colors.json (app dùng màu mặc định)"
+    [ -f "$CFG_DIR/config.json" ] && echo "ok    config.json" || echo "chưa có config.json (app dùng mặc định)"
+    local d
+    for d in "$SUMI_HOME"/apps/*/; do
+        [ -f "${d}manifest.json" ] || continue
+        echo "app   $(manifest_field "${d%/}" '.id') $(manifest_field "${d%/}" '.version') ($(manifest_field "${d%/}" '.kind')) lib=$(cat "${d}lib/VERSION" 2>/dev/null || echo THIẾU) cần $(manifest_field "${d%/}" '.requires_lib')"
+    done
+    [ "$ok" -eq 1 ]
+}
+
+cmd_app() {
+    local app="$1"; shift
+    [[ "$app" =~ ^[a-z][a-z0-9-]{1,31}$ ]] || die "tên app không hợp lệ: $app"
+    local dir="$SUMI_HOME/apps/$app"
+    [ -f "$dir/manifest.json" ] || die "app '$app' chưa cài ($dir/manifest.json không tồn tại)"
+    need jq
+
+    local kind; kind="$(manifest_field "$dir" '.kind')"
+    local -a argv
+    mapfile -t argv < <(run_argv "$dir") || true
+    [ "${#argv[@]}" -gt 0 ] || die "manifest của '$app' thiếu 'run'"
+
+    case "$kind" in
+        oneshot)
+            exec "${argv[@]}"
+            ;;
+        daemon)
+            local fn="${1:-}"
+            [ -n "$fn" ] || die "app '$app' cần tên function: sumi $app <function>"
+            local target ipc
+            target="$(manifest_field "$dir" '.ipc_target')"
+            ipc="$(jq -r --arg f "$fn" '.functions[] | select(.id == $f or .ipc_name == $f) | (.ipc_name // .id)' "$dir/manifest.json" | head -n1)"
+            [ -n "$ipc" ] || die "function '$fn' không có trong manifest của '$app'"
+            if ! pgrep -f -- "-p $dir/shell.qml" >/dev/null 2>&1; then
+                setsid "${argv[@]}" >"/tmp/sumi-$app.log" 2>&1 &
+                disown
+            fi
+            # Poll mau (0.03s/lần, tối đa ~5s) để bắt socket IPC ngay khi sẵn sàng.
+            local _
+            for _ in $(seq 1 166); do
+                if "${argv[@]}" ipc call "$target" "$ipc" 2>/dev/null; then exit 0; fi
+                sleep 0.03
+            done
+            echo "sumi: không kết nối được tới '$app' sau khi khởi động. Xem /tmp/sumi-$app.log" >&2
+            exit 1
+            ;;
+        *)
+            die "manifest của '$app' có kind không hợp lệ: '$kind'"
+            ;;
+    esac
+}
+
+case "${1:-}" in
+    "")       die "dùng: sumi <app> [function] | sumi reset [--force] | sumi doctor" ;;
+    reset)    shift; cmd_reset "$@" ;;
+    doctor)   cmd_doctor ;;
+    -h|--help) echo "dùng: sumi <app> [function] | sumi reset [--force] | sumi doctor" ;;
+    *)        cmd_app "$@" ;;
+esac

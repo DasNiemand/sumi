@@ -1,14 +1,15 @@
-# SUMI GĐ0: hợp đồng
+# SUMI 墨
 
-Giải nén vào repo `sumi`, rồi commit.
+Hub launcher + store + settings cho các app Quickshell (NieR-style) trên Hyprland + Noctalia.
 
 ```
-docs/      3 schema + CONVENTIONS.md, APP_API.md, OBJECT_API.md
-examples/  manifest mẫu của kakunin, jigen; index.json; config.json
-tools/     validate.py
+docs/            hợp đồng (schema, CONVENTIONS, APP_API, OBJECT_API)
+examples/        manifest, index, config mẫu (jigen là bản mẫu cho tới GĐ1b)
+tools/           validate.py
+lib/             SumiTheme, SumiColors, SumiConfig, SumiKeyMap, ScrambleText
+bin/sumi         launcher: sumi <app> [function] | reset | doctor
+install-dev.sh   cài kiểu dev: copy lib + app từ các repo cạnh nhau vào ~/.local/share/sumi
 ```
 
-Kiểm tra: `python3 tools/validate.py all` (cần `pip install jsonschema`).
-
-Lưu ý: manifest mẫu của kakunin và jigen là **tạm**, viết theo plan. Bản thật sẽ chốt ở GĐ1 sau khi đọc code hiện tại.
-`sha` trong `examples/index.json` là giá trị giả (toàn số 0), chỉ để kiểm tra định dạng.
+Kiểm tra hợp đồng: `python3 tools/validate.py all` (cần `jsonschema`).
+Cài để thử: `bash install-dev.sh ~/dev/sumi`.

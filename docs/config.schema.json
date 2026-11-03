@@ -62,9 +62,6 @@
           "minimum": 1,
           "maximum": 2.5
         },
-        "noise": {
-          "type": "boolean"
-        },
         "scanlines": {
           "type": "boolean"
         },
@@ -75,16 +72,6 @@
         },
         "glitch": {
           "type": "boolean"
-        },
-        "crtBootMs": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 3000
-        },
-        "crtOutroMs": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 3000
         },
         "scaleBoost": {
           "type": "number",
@@ -159,9 +146,6 @@
             "minimum": 1,
             "maximum": 2.5
           },
-          "noise": {
-            "type": "boolean"
-          },
           "scanlines": {
             "type": "boolean"
           },
@@ -172,16 +156,6 @@
           },
           "glitch": {
             "type": "boolean"
-          },
-          "crtBootMs": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 3000
-          },
-          "crtOutroMs": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 3000
           },
           "scaleBoost": {
             "type": "number",
