@@ -42,7 +42,9 @@ cmd_list() {
         obj="$(jq -c --argjson r "$running" --arg dir "$d" '{
             id, name, kanji: (.kanji // ""), description: (.description // ""), version, kind,
             running: $r, dir: $dir,
-            functions: [.functions[] | {id, label, ipc_name: (.ipc_name // .id)}]
+            functions: [.functions[] | {id, label, ipc_name: (.ipc_name // .id)}],
+            keybinds: [(.keybinds // [])[] | {action, default: (.default // ""), label: (.label // .action), locked: (.locked // false)}],
+            fonts: (.fonts // [])
         }' "$d/manifest.json" 2>/dev/null)" || continue
         [ -n "$obj" ] || continue
         json="$(jq -c --argjson o "$obj" '. + [$o]' <<<"$json")"

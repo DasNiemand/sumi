@@ -5,9 +5,12 @@ import QtQuick
 import QtQuick.Shapes
 import "lib"
 
-// SUMI 墨 - hub (GĐ2a launcher + GĐ2b-1 settings theme). Liệt kê app đã cài qua `sumi list --json`, chạy app / function.
-// Mở bằng `sumi hub`. Trang APPS: W/S chọn app, A/D chọn function (app daemon), Enter chạy, T cài đặt theme, Esc/Q đóng.
-// Trang THEME: W/S chọn phạm vi, A/D chọn preset, -/= tint, ,/. độ đậm mực, Enter áp dụng, R kế thừa, Esc quay lại.
+// SUMI 墨 - hub (GĐ2a launcher + GĐ2b-1 theme + GĐ2b-2 font/keys). Liệt kê app đã cài qua `sumi list --json`, chạy app / function.
+// Mở bằng `sumi hub`. Trang APPS: W/S chọn app, A/D chọn function (app daemon), Enter chạy, T/F/K mở cài đặt (theme/font/keys), Esc/Q đóng.
+// Cài đặt có 3 tab (Tab / Shift+Tab / phím 1-3 để đổi), Q/E đổi phạm vi, Space áp dụng, Esc quay lại:
+//   THEME: W/S phạm vi, A/D preset, -/= tint, ,/. độ đậm mực, Enter áp dụng, R kế thừa.
+//   FONT : W/S vai trò, Enter mở bộ chọn (gõ để lọc, mũi tên chọn, Tab đổi lọc JA/MONO), R đặt lại hàng, X đặt lại hết.
+//   KEYS : W/S action, Enter rồi bấm phím để gán, R về mặc định hàng, X về mặc định hết. Trùng phím chỉ cảnh báo.
 ShellRoot {
     id: root
 
@@ -87,21 +90,40 @@ ShellRoot {
     }
     function dismiss() { Qt.quit() }
 
-    // ===== Trang THEME (2b-1) =====
-    property string page: "apps"            // apps | theme
+    // ===== Trang cài đặt: THEME (2b-1), FONT + KEYS (2b-2) =====
+    property string page: "apps"            // apps | theme | font | keys
+    readonly property bool inSettings: page !== "apps"
+    readonly property var tabIds: ["theme", "font", "keys"]
     property int scopeSel: 0
-    readonly property var scopes: {
-        const l = [{ id: "global", name: "GLOBAL" }, { id: "hub", name: "HUB" }]
-        for (let i = 0; i < apps.length; i++) l.push({ id: apps[i].id, name: String(apps[i].name).toUpperCase() })
+    property string keepScope: "global"     // phạm vi người dùng chọn gần nhất; đổi tab thì dùng lại (trang không có thì lấy mục đầu)
+    function appById(id) {
+        for (let i = 0; i < apps.length; i++) if (apps[i].id === id) return apps[i]
+        return null
+    }
+    function hasKeybinds(a) { return a !== null && Array.isArray(a.keybinds) && a.keybinds.length > 0 }
+    // THEME: global, hub, các app. FONT: global + các app (hub theo global). KEYS: chỉ app có keybind.
+    function scopeListFor(p) {
+        const l = []
+        if (p === "theme") { l.push({ id: "global", name: "GLOBAL" }); l.push({ id: "hub", name: "HUB" }) }
+        else if (p === "font") l.push({ id: "global", name: "GLOBAL" })
+        for (let i = 0; i < apps.length; i++) {
+            if (p === "keys" && !hasKeybinds(apps[i])) continue
+            l.push({ id: apps[i].id, name: String(apps[i].name).toUpperCase() })
+        }
         return l
     }
-    readonly property string scopeId: scopes[Math.max(0, Math.min(scopeSel, scopes.length - 1))].id
-    readonly property string scopeName: scopes[Math.max(0, Math.min(scopeSel, scopes.length - 1))].name
-    property var draft: ({ theme: null, tint: null, inkDarken: null })
+    readonly property var scopes: scopeListFor(page)
+    readonly property bool hasScope: scopes.length > 0
+    readonly property string scopeId: hasScope ? scopes[Math.max(0, Math.min(scopeSel, scopes.length - 1))].id : ""
+    readonly property string scopeName: hasScope ? scopes[Math.max(0, Math.min(scopeSel, scopes.length - 1))].name : ""
+    readonly property var scopeApp: appById(scopeId)
+
     property string applyMsg: ""
     property string applyErr: ""
     property bool applyOk: false
 
+    // ----- THEME -----
+    property var draft: ({ theme: null, tint: null, inkDarken: null })
     readonly property var stored: ce.lookOf(cfg.data, scopeId)
     readonly property var inh: ce.inherited(cfg.data, scopeId)
     readonly property string effTheme: draft.theme !== null ? draft.theme : inh.theme
@@ -113,14 +135,201 @@ ShellRoot {
     readonly property bool blocked: curDerived.contrast < th.minContrast
     readonly property bool weak: !blocked && curDerived.contrast < th.goodContrast
 
+    // ----- FONT -----
+    property var fontDraft: ({ title: null, label: null, data: null, numeral: null, kanji: null })
+    property int fontSel: 0
+    readonly property var fontStored: ce.fontsOf(cfg.data, scopeId)
+    readonly property var fontInh: ce.fontsInherited(cfg.data, scopeId)
+    readonly property bool fontDirty: !ce.sameFonts(fontDraft, fontStored)
+    readonly property var fontRows: scopeId === "global" ? ce.roles : ce.fontRolesOf(scopeApp)
+    readonly property string pickRole: fontRows.length > 0 ? fontRows[Math.max(0, Math.min(fontSel, fontRows.length - 1))] : ""
+    property var fontList: []
+    property bool fontListLoaded: false
+    readonly property var fontIndex: {
+        const m = ({})
+        for (let i = 0; i < fontList.length; i++) m[fontList[i].name.toLowerCase()] = fontList[i]
+        return m
+    }
+    property bool pickOpen: false
+    property string pickQuery: ""
+    property bool pickFilter: true
+    property int pickIdx: 0
+    readonly property string pickKind: ce.filterKind(pickRole)
+    readonly property var pickItems: [{ name: "", isDefault: true, mono: false, ja: false }].concat(ce.filterFonts(fontList, pickQuery, pickFilter ? pickKind : ""))
+
+    function fontEff(role) { return fontDraft[role] !== null ? fontDraft[role] : fontInh[role] }
+    // family thực dùng để vẽ ("" = mặc định hệ thống cho kanji)
+    function fam(role) {
+        const v = fontEff(role)
+        return v !== "" ? v : (role === "kanji" ? Qt.application.font.family : ce.fontDefaults[role])
+    }
+    function fontShown(role) {
+        const v = fontEff(role)
+        return v !== "" ? v : (role === "kanji" ? "SYSTEM DEFAULT" : ce.fontDefaults[role])
+    }
+    function fontGeneric(v) { return v === "sans-serif" || v === "serif" || v === "monospace" }
+    function fontMissing(role) {
+        const v = fontEff(role)
+        return fontListLoaded && v !== "" && !fontGeneric(v) && fontIndex[v.toLowerCase()] === undefined
+    }
+    function fontNoJa(role) {
+        const v = fontEff(role)
+        if (role !== "kanji" || !fontListLoaded || v === "" || fontGeneric(v)) return false
+        const f = fontIndex[v.toLowerCase()]
+        return f !== undefined && !f.ja
+    }
+    readonly property string fontWarn: {
+        let w = ""
+        for (let i = 0; i < fontRows.length; i++) {
+            const r = fontRows[i]
+            if (fontMissing(r)) { w = r.toUpperCase() + ": font không còn trong hệ thống"; break }
+            if (fontNoJa(r)) { w = "KANJI: font không có glyph tiếng Nhật, chữ 墨 紙 sẽ bị ô vuông"; break }
+        }
+        return w
+    }
+    function ensureFonts() { if (!fontListLoaded && !fcProc.running) fcProc.running = true }
+    function setFont(role, v) {
+        const d = JSON.parse(JSON.stringify(fontDraft))
+        d[role] = v
+        fontDraft = d
+        applyMsg = ""; applyErr = ""
+    }
+    function resetFontRow() { if (pickRole !== "") setFont(pickRole, null) }
+    function resetFontAll() {
+        fontDraft = { title: null, label: null, data: null, numeral: null, kanji: null }
+        applyMsg = ""; applyErr = ""
+    }
+    function moveFontRow(d) { if (fontRows.length > 0) fontSel = (fontSel + d + fontRows.length) % fontRows.length }
+    function openPicker() {
+        if (pickRole === "") return
+        ensureFonts()
+        pickQuery = ""; pickFilter = true
+        pickOpen = true
+        const cur = fontDraft[pickRole]
+        let i = 0
+        if (cur !== null) for (let k = 0; k < pickItems.length; k++) if (pickItems[k].name === cur) { i = k; break }
+        pickIdx = i
+    }
+    function pickMove(d) { pickIdx = Math.max(0, Math.min(pickItems.length - 1, pickIdx + d)) }
+    function choosePicked() {
+        const it = pickItems[Math.max(0, Math.min(pickIdx, pickItems.length - 1))]
+        if (it) setFont(pickRole, it.isDefault ? null : it.name)
+        pickOpen = false
+    }
+    function pickerKey(event) {
+        const k = event.key
+        const ar = event.isAutoRepeat
+        if (k === Qt.Key_Escape) { if (!ar) pickOpen = false }
+        else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) choosePicked() }
+        else if (k === Qt.Key_Up) pickMove(-1)
+        else if (k === Qt.Key_Down) pickMove(1)
+        else if (k === Qt.Key_PageUp) pickMove(-7)
+        else if (k === Qt.Key_PageDown) pickMove(7)
+        else if (k === Qt.Key_Home) pickIdx = 0
+        else if (k === Qt.Key_End) pickIdx = pickItems.length - 1
+        else if (k === Qt.Key_Tab || k === Qt.Key_Backtab) { if (!ar && pickKind !== "") { pickFilter = !pickFilter; pickIdx = 0 } }
+        else if (k === Qt.Key_Backspace) { if (pickQuery.length > 0) { pickQuery = pickQuery.slice(0, -1); pickIdx = 0 } }
+        else if (event.text.length === 1 && event.text >= " " && event.text !== "\u007f"
+                 && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) { pickQuery += event.text; pickIdx = 0 }
+    }
+
+    // ----- KEYS -----
+    property var keyDraft: ({})
+    property int keySel: 0
+    property bool capturing: false
+    property string capMsg: ""
+    readonly property var kbList: hasKeybinds(scopeApp) ? scopeApp.keybinds : []
+    readonly property var keyStored: ce.keysOf(cfg.data, scopeId)
+    readonly property bool keyDirty: !ce.sameKeys(keyDraft, keyStored)
+    readonly property bool multiFn: scopeApp !== null && Array.isArray(scopeApp.functions) && scopeApp.functions.length > 1
+    readonly property var keyConf: ce.keyConflicts(kbList, keyDraft, multiFn)
+    readonly property int keyConfCount: Object.keys(keyConf).length
+    readonly property var curKb: (kbList.length > 0 && keySel >= 0 && keySel < kbList.length) ? kbList[keySel] : null
+    function keyShown(kbItem) { return ce.keyEff(kbItem, keyDraft) }
+    function setKey(action, key) {
+        let item = null
+        for (let i = 0; i < kbList.length; i++) if (kbList[i].action === action) item = kbList[i]
+        if (item === null) return
+        if (item.locked === true) { capMsg = "LOCKED"; return }
+        const d = JSON.parse(JSON.stringify(keyDraft))
+        if (key === item.default) delete d[action]; else d[action] = key
+        keyDraft = d
+        applyMsg = ""; applyErr = ""
+    }
+    function moveKeyRow(d) { if (kbList.length > 0) keySel = (keySel + d + kbList.length) % kbList.length }
+    function startCapture() {
+        if (curKb === null) return
+        if (curKb.locked === true) { capMsg = "LOCKED: " + curKb.action + " không gán lại được"; return }
+        capMsg = ""; capturing = true
+    }
+    function captureEvent(event) {
+        if (event.isAutoRepeat) return
+        const k = event.key
+        if (k === Qt.Key_Escape) { capturing = false; capMsg = ""; return }
+        if (k === Qt.Key_Shift || k === Qt.Key_Control || k === Qt.Key_Alt || k === Qt.Key_Meta
+            || k === Qt.Key_AltGr || k === Qt.Key_CapsLock || k === Qt.Key_Super_L || k === Qt.Key_Super_R) return
+        if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) { capMsg = "KHÔNG DÙNG CTRL / ALT / SUPER"; return }
+        const r = ce.captureResult(k)
+        if (!r.ok) { capMsg = r.msg.toUpperCase(); return }
+        setKey(curKb.action, r.key)
+        capturing = false; capMsg = ""
+    }
+    function resetKeyRow() {
+        if (curKb === null || curKb.locked === true) return
+        const d = JSON.parse(JSON.stringify(keyDraft))
+        delete d[curKb.action]
+        keyDraft = d
+        applyMsg = ""; applyErr = ""
+    }
+    function resetKeyAll() { keyDraft = ({}); applyMsg = ""; applyErr = "" }
+
+    // ----- chung -----
     function presetKanji(n) {
         return n === "paper" ? "紙" : n === "ink" ? "墨" : n === "mono-white" ? "白" : n === "mono-black" ? "黒" : n === "accent" ? "彩" : "随"
     }
-    function loadDraft() { draft = ce.lookOf(cfg.data, scopeId); applyMsg = ""; applyErr = "" }
-    function openTheme() { page = "theme"; if (scopeSel >= scopes.length) scopeSel = 0; loadDraft() }
-    function closeTheme() { page = "apps" }
-    function setScope(i) { scopeSel = Math.max(0, Math.min(i, scopes.length - 1)); loadDraft() }
-    function moveScope(d) { setScope((scopeSel + d + scopes.length) % scopes.length) }
+    function scopeTag(p, id) {
+        if (p === "theme") { const lk = ce.lookOf(cfg.data, id); return lk.theme !== null ? lk.theme.toUpperCase() : "INHERIT" }
+        if (p === "font") {
+            const f = ce.fontsOf(cfg.data, id)
+            let n = 0
+            for (let i = 0; i < ce.roles.length; i++) if (f[ce.roles[i]] !== null) n++
+            return n > 0 ? (n + " SET") : "INHERIT"
+        }
+        const n2 = Object.keys(ce.keysOf(cfg.data, id)).length
+        return n2 > 0 ? (n2 + " CUSTOM") : "DEFAULT"
+    }
+    function tabDirty(id) { return id === "theme" ? dirty : (id === "font" ? fontDirty : keyDirty) }
+    function loadDraft() {
+        draft = ce.lookOf(cfg.data, scopeId)
+        fontDraft = ce.fontsOf(cfg.data, scopeId)
+        keyDraft = ce.keysOf(cfg.data, scopeId)
+        fontSel = 0; keySel = 0
+        pickOpen = false; capturing = false; capMsg = ""
+        applyMsg = ""; applyErr = ""
+    }
+    // Vào trang p với phạm vi id (không có trong danh sách thì về phần tử đầu).
+    function enterPage(p, id) {
+        page = p
+        const ids = scopeListFor(p).map(s => s.id)
+        const i = ids.indexOf(id)
+        scopeSel = i >= 0 ? i : 0
+        if (p === "font") ensureFonts()
+        loadDraft()
+    }
+    function openSettings(p) { enterPage(p, (p === "keys" && cur !== null) ? cur.id : keepScope) }
+    function closeSettings() { page = "apps"; pickOpen = false; capturing = false }
+    function cycleTab(d) {
+        const i = tabIds.indexOf(page)
+        enterPage(tabIds[(i + d + tabIds.length) % tabIds.length], keepScope)
+    }
+    function setScope(i) {
+        if (scopes.length === 0) return
+        scopeSel = Math.max(0, Math.min(i, scopes.length - 1))
+        keepScope = scopeId
+        loadDraft()
+    }
+    function moveScope(d) { if (scopes.length > 0) setScope((scopeSel + d + scopes.length) % scopes.length) }
+
     function setPreset(name) {
         draft = { theme: name, tint: draft.tint, inkDarken: draft.inkDarken }
         applyMsg = ""; applyErr = ""
@@ -141,24 +350,47 @@ ShellRoot {
         draft = { theme: null, tint: null, inkDarken: null }
         applyMsg = ""; applyErr = ""
     }
-    function applyDraft() {
+
+    function fail(msg, err) { applyOk = false; applyMsg = msg; applyErr = err || "" }
+    // Ghi config mới qua `sumi config apply` (backup + tmp/rename nằm trong lệnh đó).
+    function commitConfig(next) {
         if (applyProc.running) return
-        if (!dirty) { applyOk = false; applyMsg = "NO CHANGES"; return }
-        if (blocked) { applyOk = false; applyMsg = "BLOCKED"; applyErr = "tương phản dưới 4.5, không cho áp dụng"; return }
         // config.json hiện có nhưng đọc không ra JSON: không ghi đè (tránh làm mất phần còn lại)
         let raw = ""
         try { raw = cfg.text() } catch (e) { raw = "" }
         if (raw.trim() !== "") {
-            try { JSON.parse(raw) } catch (e) {
-                applyOk = false; applyMsg = "CONFIG HỎNG"; applyErr = "config.json không đọc được; chạy: sumi config restore"; return
-            }
+            try { JSON.parse(raw) } catch (e) { fail("CONFIG HỎNG", "config.json không đọc được; chạy: sumi config restore"); return }
         }
-        const errs = ce.validateLook(draft, scopeId)
-        if (errs.length > 0) { applyOk = false; applyMsg = "REJECTED"; applyErr = errs.join("; "); return }
-        const next = ce.withLook(cfg.data, scopeId, draft)
         applyErr = ""; applyOk = false; applyMsg = "WRITING..."
         applyProc.command = [sumiBin, "config", "apply", JSON.stringify(next)]
         applyProc.running = true
+    }
+    function applyCurrent() {
+        if (applyProc.running) return
+        if (page === "theme") applyTheme()
+        else if (page === "font") applyFonts()
+        else if (page === "keys") applyKeys()
+    }
+    function applyTheme() {
+        if (!dirty) { fail("NO CHANGES"); return }
+        if (blocked) { fail("BLOCKED", "tương phản dưới 4.5, không cho áp dụng"); return }
+        const errs = ce.validateLook(draft, scopeId)
+        if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
+        commitConfig(ce.withLook(cfg.data, scopeId, draft))
+    }
+    function applyFonts() {
+        if (scopeId === "hub" || !hasScope) { fail("REJECTED", "chọn GLOBAL hoặc một app"); return }
+        if (!fontDirty) { fail("NO CHANGES"); return }
+        const errs = ce.validateFonts(fontDraft, scopeId)
+        if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
+        commitConfig(ce.withFonts(cfg.data, scopeId, fontDraft))
+    }
+    function applyKeys() {
+        if (!hasScope) { fail("REJECTED", "không có app nào có keybind"); return }
+        if (!keyDirty) { fail("NO CHANGES"); return }
+        const errs = ce.validateKeys(keyDraft, kbList, scopeId)
+        if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
+        commitConfig(ce.withKeys(cfg.data, scopeId, keyDraft, kbList))
     }
     Process {
         id: applyProc
@@ -168,6 +400,26 @@ ShellRoot {
             root.applyMsg = code === 0 ? "APPLIED" : ("FAILED (" + code + ")")
             if (code === 0) root.applyErr = ""
         }
+    }
+    // Danh sách font hệ thống: A = mọi font (+ spacing, 100/110 là mono), J = font có glyph tiếng Nhật.
+    Process {
+        id: fcProc
+        command: ["sh", "-c", "fc-list -f 'A|%{family[0]}|%{spacing}\\n'; fc-list -f 'J|%{family[0]}\\n' ':lang=ja'"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                root.fontList = ce.parseFontList(this.text)
+                root.fontListLoaded = true
+            }
+        }
+    }
+
+    readonly property string footerText: {
+        if (page === "apps") return "W/S APP   A/D FUNCTION   ENTER RUN   T THEME   F FONT   K KEYS   ESC CLOSE"
+        if (capturing) return "PRESS A KEY   ESC CANCEL"
+        if (pickOpen) return "TYPE FILTER   UP/DOWN MOVE   ENTER SELECT   TAB " + (pickKind === "ja" ? "JA ONLY" : (pickKind === "mono" ? "MONO ONLY" : "-")) + "   ESC CANCEL"
+        if (page === "theme") return "W/S SCOPE  A/D PRESET  -/= TINT  ,/. INK  ENTER APPLY  R INHERIT  TAB NEXT  ESC BACK"
+        if (page === "font") return "W/S ROLE  Q/E SCOPE  ENTER PICK  SPACE APPLY  R RESET  X ALL  TAB NEXT  ESC BACK"
+        return "W/S ACTION  Q/E APP  ENTER REBIND  SPACE APPLY  R DEFAULT  X ALL  TAB NEXT  ESC BACK"
     }
 
     Timer { id: quitTimer; interval: 150; repeat: false; onTriggered: Qt.quit() }
@@ -221,9 +473,30 @@ ShellRoot {
                 if (!card.inputReady) return
                 const k = event.key
                 const ar = event.isAutoRepeat
+                if (root.page === "apps") {
+                    if (k === Qt.Key_Escape || k === Qt.Key_Q) { if (!ar) root.dismiss(); event.accepted = true }
+                    else if (k === Qt.Key_T || k === Qt.Key_Tab) { if (!ar) root.openSettings("theme"); event.accepted = true }
+                    else if (k === Qt.Key_F) { if (!ar) root.openSettings("font"); event.accepted = true }
+                    else if (k === Qt.Key_K) { if (!ar) root.openSettings("keys"); event.accepted = true }
+                    else if (k === Qt.Key_W || k === Qt.Key_Up) { root.move(-1); event.accepted = true }
+                    else if (k === Qt.Key_S || k === Qt.Key_Down) { root.move(1); event.accepted = true }
+                    else if (k === Qt.Key_A || k === Qt.Key_Left) { root.moveFn(-1); event.accepted = true }
+                    else if (k === Qt.Key_D || k === Qt.Key_Right) { root.moveFn(1); event.accepted = true }
+                    else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) { if (!ar) root.runSelected(); event.accepted = true }
+                    return
+                }
+                // ----- trang cài đặt -----
+                if (root.capturing) { root.captureEvent(event); event.accepted = true; return }
+                if (root.pickOpen) { root.pickerKey(event); event.accepted = true; return }
+                if (k === Qt.Key_Escape) { if (!ar) root.closeSettings(); event.accepted = true; return }
+                if (k === Qt.Key_Tab) { if (!ar) root.cycleTab(1); event.accepted = true; return }
+                if (k === Qt.Key_Backtab) { if (!ar) root.cycleTab(-1); event.accepted = true; return }
+                if (k >= Qt.Key_1 && k <= Qt.Key_3) { if (!ar) root.enterPage(root.tabIds[k - Qt.Key_1], root.keepScope); event.accepted = true; return }
+                if (k === Qt.Key_Q) { if (!ar) root.moveScope(-1); event.accepted = true; return }
+                if (k === Qt.Key_E) { if (!ar) root.moveScope(1); event.accepted = true; return }
+                if (k === Qt.Key_Space) { if (!ar) root.applyCurrent(); event.accepted = true; return }
                 if (root.page === "theme") {
-                    if (k === Qt.Key_Escape || k === Qt.Key_Q || k === Qt.Key_Tab) { if (!ar) root.closeTheme(); event.accepted = true }
-                    else if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveScope(-1); event.accepted = true }
+                    if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveScope(-1); event.accepted = true }
                     else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveScope(1); event.accepted = true }
                     else if (k === Qt.Key_A || k === Qt.Key_Left) { if (!ar) root.movePreset(-1); event.accepted = true }
                     else if (k === Qt.Key_D || k === Qt.Key_Right) { if (!ar) root.movePreset(1); event.accepted = true }
@@ -232,16 +505,20 @@ ShellRoot {
                     else if (k === Qt.Key_Comma) { root.nudge("ink", -0.1); event.accepted = true }
                     else if (k === Qt.Key_Period) { root.nudge("ink", 0.1); event.accepted = true }
                     else if (k === Qt.Key_R) { if (!ar) root.inheritScope(); event.accepted = true }
-                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.applyDraft(); event.accepted = true }
-                    return
+                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.applyCurrent(); event.accepted = true }
+                } else if (root.page === "font") {
+                    if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveFontRow(-1); event.accepted = true }
+                    else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveFontRow(1); event.accepted = true }
+                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.openPicker(); event.accepted = true }
+                    else if (k === Qt.Key_R) { if (!ar) root.resetFontRow(); event.accepted = true }
+                    else if (k === Qt.Key_X) { if (!ar) root.resetFontAll(); event.accepted = true }
+                } else if (root.page === "keys") {
+                    if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveKeyRow(-1); event.accepted = true }
+                    else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveKeyRow(1); event.accepted = true }
+                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.startCapture(); event.accepted = true }
+                    else if (k === Qt.Key_R) { if (!ar) root.resetKeyRow(); event.accepted = true }
+                    else if (k === Qt.Key_X) { if (!ar) root.resetKeyAll(); event.accepted = true }
                 }
-                if (k === Qt.Key_Escape || k === Qt.Key_Q) { if (!ar) root.dismiss(); event.accepted = true }
-                else if (k === Qt.Key_T || k === Qt.Key_Tab) { if (!ar) root.openTheme(); event.accepted = true }
-                else if (k === Qt.Key_W || k === Qt.Key_Up) { root.move(-1); event.accepted = true }
-                else if (k === Qt.Key_S || k === Qt.Key_Down) { root.move(1); event.accepted = true }
-                else if (k === Qt.Key_A || k === Qt.Key_Left) { root.moveFn(-1); event.accepted = true }
-                else if (k === Qt.Key_D || k === Qt.Key_Right) { root.moveFn(1); event.accepted = true }
-                else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) { if (!ar) root.runSelected(); event.accepted = true }
             }
 
             // nền giấy + khung vát góc dưới phải
@@ -275,12 +552,39 @@ ShellRoot {
                 }
                 Text {
                     x: card.px(168); anchors.verticalCenter: parent.verticalCenter
-                    text: root.page === "theme" ? "THEME" : "APPS"; color: th.soft
+                    visible: !root.inSettings
+                    text: "APPS"; color: th.soft
                     font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
+                }
+                Row {
+                    x: card.px(168); anchors.verticalCenter: parent.verticalCenter
+                    visible: root.inSettings
+                    spacing: card.px(6)
+                    Repeater {
+                        model: root.tabIds
+                        delegate: Rectangle {
+                            required property int index
+                            required property string modelData
+                            readonly property bool on: modelData === root.page
+                            width: card.px(104); height: card.px(26)
+                            color: on ? th.ink : "transparent"
+                            border.width: 1; border.color: on ? th.ink : th.rule
+                            Text {
+                                anchors.centerIn: parent
+                                text: (index + 1) + " " + modelData.toUpperCase() + (root.tabDirty(modelData) ? " *" : "")
+                                color: parent.on ? th.paper : th.ink
+                                font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true; font.letterSpacing: 1.5
+                            }
+                            MouseArea {
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.enterPage(parent.modelData, root.keepScope)
+                            }
+                        }
+                    }
                 }
                 Text {
                     anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                    text: root.page === "theme" ? root.scopeName : (root.apps.length + " INSTALLED"); color: th.ink
+                    text: root.inSettings ? root.scopeName : (root.apps.length + " INSTALLED"); color: th.ink
                     font.family: root.fontData; font.pixelSize: card.fs(16); font.bold: true
                 }
                 Rectangle { anchors.bottom: parent.bottom; anchors.bottomMargin: -card.px(8); width: parent.width; height: 1; color: th.rule }
@@ -454,7 +758,7 @@ ShellRoot {
             // ---------- trang THEME (2b-1) ----------
             Item {
                 id: tp
-                visible: root.page === "theme"
+                visible: root.inSettings
                 anchors.fill: parent
 
                 // danh sách phạm vi (trái)
@@ -472,7 +776,7 @@ ShellRoot {
                         required property int index
                         required property var modelData
                         readonly property bool on: index === root.scopeSel
-                        readonly property var lk: ce.lookOf(cfg.data, modelData.id)
+                        readonly property string tag: root.scopeTag(root.page, modelData.id)
                         width: scopeList.width
                         height: card.px(48)
                         Rectangle {
@@ -490,7 +794,7 @@ ShellRoot {
                         Text {
                             anchors.right: parent.right; anchors.rightMargin: card.px(16)
                             anchors.verticalCenter: parent.verticalCenter
-                            text: srow.lk.theme !== null ? srow.lk.theme.toUpperCase() : "INHERIT"
+                            text: srow.tag
                             color: srow.on ? th.paper : th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13)
                         }
@@ -504,10 +808,19 @@ ShellRoot {
                     }
                 }
                 Rectangle { x: card.m; y: card.px(76); width: card.px(340); height: 1; color: th.ink }
+                Text {
+                    x: card.m + card.px(16); y: card.px(96); width: card.px(310)
+                    visible: !root.hasScope
+                    wrapMode: Text.WordWrap
+                    text: "Chưa có app nào khai báo keybind."
+                    color: th.soft
+                    font.family: root.fontLabel; font.pixelSize: card.fs(16)
+                }
 
                 // bảng chỉnh (phải)
                 Item {
                     id: tr
+                    visible: root.page === "theme"
                     x: card.m + card.px(340) + card.px(30)
                     y: card.px(76)
                     width: card.width - x - card.m
@@ -697,15 +1010,316 @@ ShellRoot {
                         font.family: root.fontData; font.pixelSize: card.fs(13)
                     }
                 }
+
+                // ---------- pane FONT (2b-2) ----------
+                Item {
+                    id: fr
+                    visible: root.page === "font"
+                    x: card.m + card.px(340) + card.px(30)
+                    y: card.px(76)
+                    width: card.width - x - card.m
+                    height: scopeList.height
+
+                    Rectangle { width: parent.width; height: 1; color: th.ink }
+                    Text {
+                        y: card.px(8)
+                        text: "FONT / " + root.scopeName
+                        color: th.ink
+                        font.family: root.fontTitle; font.pixelSize: card.fs(24); font.bold: true
+                    }
+                    Text {
+                        anchors.right: parent.right; y: card.px(14)
+                        text: root.fontDirty ? "DRAFT" : (root.scopeTag("font", root.scopeId) === "INHERIT" ? "INHERIT" : "SAVED")
+                        color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
+                    }
+
+                    Repeater {
+                        model: root.fontRows
+                        delegate: Item {
+                            id: frow
+                            required property int index
+                            required property string modelData
+                            readonly property bool on: index === root.fontSel
+                            readonly property bool own: root.fontDraft[modelData] !== null
+                            readonly property bool bad: root.fontMissing(modelData) || root.fontNoJa(modelData)
+                            y: card.px(48) + index * card.px(46)
+                            width: fr.width; height: card.px(46)
+                            Rectangle {
+                                anchors.fill: parent; anchors.bottomMargin: 1
+                                color: frow.on ? th.ink : (frm.containsMouse ? th.wash : "transparent")
+                            }
+                            Text {
+                                x: card.px(14); anchors.verticalCenter: parent.verticalCenter
+                                text: frow.modelData.toUpperCase()
+                                color: frow.on ? th.paper : th.soft
+                                font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 1.5
+                            }
+                            Text {
+                                x: card.px(112); anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width - card.px(112) - card.px(110)
+                                elide: Text.ElideRight
+                                text: root.fontShown(frow.modelData)
+                                color: frow.on ? th.paper : th.ink
+                                font.family: root.fam(frow.modelData); font.pixelSize: card.fs(20)
+                            }
+                            Text {
+                                anchors.right: parent.right; anchors.rightMargin: card.px(14)
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.fontMissing(frow.modelData) ? "MISSING" : (root.fontNoJa(frow.modelData) ? "NO JA" : (frow.own ? "OWN" : "inh"))
+                                color: frow.bad ? th.danger : (frow.on ? th.paper : th.soft)
+                                font.family: root.fontData; font.pixelSize: card.fs(12); font.bold: frow.bad
+                            }
+                            MouseArea {
+                                id: frm
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: { if (root.fontSel === frow.index) root.openPicker(); else root.fontSel = frow.index }
+                            }
+                        }
+                    }
+
+                    // xem trước bằng font của bản nháp (kiểm tra luôn dấu tiếng Việt và kanji)
+                    Item {
+                        y: card.px(48) + 5 * card.px(46) + card.px(8)
+                        width: parent.width; height: card.px(80)
+                        Rectangle { anchors.fill: parent; color: th.paper; border.width: 1; border.color: th.ink }
+                        Text {
+                            x: card.px(14); y: card.px(6)
+                            text: "KAKUNIN"; color: th.ink
+                            font.family: root.fam("title"); font.pixelSize: card.fs(28); font.bold: true
+                        }
+                        Text {
+                            x: card.px(14); y: card.px(46)
+                            text: "Đóng cửa sổ này?"; color: th.soft
+                            font.family: root.fam("label"); font.pixelSize: card.fs(15)
+                        }
+                        Text {
+                            x: card.px(300); y: card.px(6)
+                            text: "確認 時限 墨"; color: th.ink
+                            font.family: root.fam("kanji"); font.pixelSize: card.fs(30)
+                        }
+                        Text {
+                            x: card.px(300); y: card.px(50)
+                            text: "[Y] YES  0x3F2A"; color: th.ink
+                            font.family: root.fam("data"); font.pixelSize: card.fs(14)
+                        }
+                        Text {
+                            x: card.px(450); y: card.px(44)
+                            text: "T-12:34"; color: th.ink
+                            font.family: root.fam("numeral"); font.pixelSize: card.fs(22); font.bold: true
+                        }
+                    }
+
+                    Rectangle { y: card.px(374); width: parent.width; height: 1; color: th.rule }
+                    Text {
+                        y: card.px(382)
+                        width: parent.width; elide: Text.ElideRight
+                        text: root.fontWarn !== "" ? root.fontWarn : (root.fontListLoaded ? (root.fontList.length + " FONTS INSTALLED") : "LOADING FONT LIST...")
+                        color: root.fontWarn !== "" ? th.danger : th.ink
+                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: root.fontWarn !== ""
+                    }
+                    Text {
+                        y: card.px(404)
+                        width: parent.width; elide: Text.ElideRight
+                        text: root.applyErr !== "" ? (root.applyMsg + "  " + root.applyErr) : root.applyMsg
+                        color: root.applyOk ? th.ink : th.danger
+                        font.family: root.fontData; font.pixelSize: card.fs(13)
+                    }
+
+                    // ----- bộ chọn font: gõ để lọc, mũi tên để chọn -----
+                    Rectangle {
+                        id: pk
+                        visible: root.pickOpen
+                        z: 5
+                        y: card.px(40); width: parent.width; height: card.px(332)
+                        color: th.paper; border.width: 2; border.color: th.ink
+                        readonly property var curItem: root.pickItems.length > 0 ? root.pickItems[Math.max(0, Math.min(root.pickIdx, root.pickItems.length - 1))] : null
+                        readonly property string inhFam: {
+                            const v = root.fontInh[root.pickRole]
+                            return v !== "" ? v : (root.pickRole === "kanji" ? Qt.application.font.family : ce.fontDefaults[root.pickRole])
+                        }
+                        readonly property string prevFam: (curItem !== null && !curItem.isDefault) ? curItem.name : inhFam
+                        Text {
+                            x: card.px(14); y: card.px(8)
+                            text: "PICK / " + root.pickRole.toUpperCase(); color: th.ink
+                            font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true; font.letterSpacing: 2
+                        }
+                        Text {
+                            anchors.right: parent.right; anchors.rightMargin: card.px(14); y: card.px(8)
+                            text: (root.pickKind === "" ? "ALL FONTS" : (root.pickFilter ? (root.pickKind === "ja" ? "JA ONLY" : "MONO ONLY") : "ALL FONTS"))
+                                  + "  (" + (root.pickItems.length - 1) + ")"
+                            color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 1
+                        }
+                        Text {
+                            x: card.px(14); y: card.px(32)
+                            text: "FILTER  " + root.pickQuery + "_"; color: th.ink
+                            font.family: root.fontData; font.pixelSize: card.fs(15)
+                        }
+                        Rectangle { x: card.px(14); y: card.px(54); width: parent.width - card.px(28); height: 1; color: th.rule }
+                        ListView {
+                            id: pkList
+                            x: card.px(8); y: card.px(58)
+                            width: parent.width - card.px(16); height: card.px(210)
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            model: root.pickItems
+                            currentIndex: root.pickIdx
+                            onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                            delegate: Item {
+                                id: pr
+                                required property int index
+                                required property var modelData
+                                readonly property bool on: index === root.pickIdx
+                                width: pkList.width; height: card.px(30)
+                                Rectangle { anchors.fill: parent; color: pr.on ? th.ink : (prm.containsMouse ? th.wash : "transparent") }
+                                Text {
+                                    x: card.px(8); anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - card.px(110)
+                                    elide: Text.ElideRight
+                                    text: pr.modelData.isDefault ? "— DEFAULT / INHERIT —" : pr.modelData.name
+                                    color: pr.on ? th.paper : th.ink
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(15)
+                                }
+                                Text {
+                                    anchors.right: parent.right; anchors.rightMargin: card.px(8)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: (pr.modelData.mono ? "MONO " : "") + (pr.modelData.ja ? "JA" : "")
+                                    color: pr.on ? th.paper : th.soft
+                                    font.family: root.fontData; font.pixelSize: card.fs(12)
+                                }
+                                MouseArea {
+                                    id: prm
+                                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: { root.pickIdx = pr.index; root.choosePicked() }
+                                }
+                            }
+                        }
+                        Rectangle { x: card.px(14); y: card.px(272); width: parent.width - card.px(28); height: 1; color: th.rule }
+                        Text {
+                            x: card.px(14); y: card.px(282); width: parent.width - card.px(28)
+                            elide: Text.ElideRight
+                            text: "Aa Đóng cửa sổ 0123 [Y] 墨紙 確認"; color: th.ink
+                            font.family: pk.prevFam; font.pixelSize: card.fs(22)
+                        }
+                    }
+                }
+
+                // ---------- pane KEYS (2b-2) ----------
+                Item {
+                    id: kr
+                    visible: root.page === "keys" && root.hasScope
+                    x: card.m + card.px(340) + card.px(30)
+                    y: card.px(76)
+                    width: card.width - x - card.m
+                    height: scopeList.height
+
+                    Rectangle { width: parent.width; height: 1; color: th.ink }
+                    Text {
+                        y: card.px(8)
+                        text: "KEYS / " + root.scopeName
+                        color: th.ink
+                        font.family: root.fontTitle; font.pixelSize: card.fs(24); font.bold: true
+                    }
+                    Text {
+                        anchors.right: parent.right; y: card.px(14)
+                        text: root.keyDirty ? "DRAFT" : (root.scopeTag("keys", root.scopeId) === "DEFAULT" ? "DEFAULT" : "SAVED")
+                        color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
+                    }
+
+                    ListView {
+                        id: keyList
+                        y: card.px(46); width: parent.width; height: card.px(320)
+                        clip: true
+                        interactive: false
+                        model: root.kbList
+                        currentIndex: root.keySel
+                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                        delegate: Item {
+                            id: krow
+                            required property int index
+                            required property var modelData
+                            readonly property bool on: index === root.keySel
+                            readonly property bool locked: modelData.locked === true
+                            readonly property bool changed: !locked && root.keyDraft[modelData.action] !== undefined
+                            readonly property bool conf: root.keyConf[modelData.action] !== undefined
+                            readonly property bool capHere: on && root.capturing
+                            width: keyList.width; height: card.px(34)
+                            Rectangle {
+                                anchors.fill: parent; anchors.bottomMargin: 1
+                                color: krow.on ? th.ink : (krm.containsMouse ? th.wash : "transparent")
+                            }
+                            Text {
+                                x: card.px(14); anchors.verticalCenter: parent.verticalCenter
+                                width: card.px(170); elide: Text.ElideRight
+                                text: krow.modelData.label
+                                color: krow.on ? th.paper : th.ink
+                                font.family: root.fontLabel; font.pixelSize: card.fs(16); font.bold: true
+                            }
+                            Text {
+                                x: card.px(196); anchors.verticalCenter: parent.verticalCenter
+                                text: krow.modelData.action
+                                color: krow.on ? th.paper : th.soft
+                                font.family: root.fontData; font.pixelSize: card.fs(12)
+                            }
+                            Text {
+                                anchors.right: keycap.left; anchors.rightMargin: card.px(10)
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: krow.locked ? "LOCK" : (krow.changed ? ("def " + krow.modelData.default) : "")
+                                color: krow.on ? th.paper : th.soft
+                                font.family: root.fontData; font.pixelSize: card.fs(12)
+                            }
+                            Rectangle {
+                                id: keycap
+                                anchors.right: parent.right; anchors.rightMargin: card.px(12)
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: card.px(104); height: card.px(24)
+                                color: krow.capHere ? th.paper : "transparent"
+                                border.width: krow.conf ? 2 : 1
+                                border.color: krow.conf ? th.danger : (krow.on ? th.paper : th.ink)
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: krow.capHere ? "PRESS KEY" : root.keyShown(krow.modelData).toUpperCase()
+                                    color: krow.capHere ? th.ink : (krow.on ? th.paper : th.ink)
+                                    font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true
+                                }
+                            }
+                            MouseArea {
+                                id: krm
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: { if (root.keySel === krow.index) root.startCapture(); else { root.keySel = krow.index; root.capturing = false; root.capMsg = "" } }
+                            }
+                        }
+                    }
+
+                    Rectangle { y: card.px(374); width: parent.width; height: 1; color: th.rule }
+                    Text {
+                        y: card.px(382)
+                        width: parent.width; elide: Text.ElideRight
+                        readonly property var cm: (root.curKb !== null && root.keyConf[root.curKb.action] !== undefined) ? root.keyConf[root.curKb.action] : []
+                        text: root.capMsg !== "" ? root.capMsg
+                              : (root.capturing ? ("ĐANG GÁN: " + (root.curKb ? root.curKb.action : ""))
+                              : (cm.length > 0 ? ("CẢNH BÁO: " + cm.join("; "))
+                              : (root.keyConfCount > 0 ? (root.keyConfCount + " ACTION CÓ CẢNH BÁO") : "KHÔNG TRÙNG PHÍM")))
+                        color: (root.capMsg !== "" || cm.length > 0 || root.keyConfCount > 0) ? th.danger : th.ink
+                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: root.capMsg !== "" || cm.length > 0
+                    }
+                    Text {
+                        y: card.px(404)
+                        width: parent.width; elide: Text.ElideRight
+                        text: root.applyErr !== "" ? (root.applyMsg + "  " + root.applyErr) : root.applyMsg
+                        color: root.applyOk ? th.ink : th.danger
+                        font.family: root.fontData; font.pixelSize: card.fs(13)
+                    }
+                }
             }
 
             // ---------- chân trang ----------
             Rectangle { x: card.m; y: card.height - card.px(66); width: card.width - 2 * card.m; height: 1; color: th.rule }
             Text {
                 x: card.m; y: card.height - card.px(52)
-                text: root.page === "theme"
-                    ? "W/S  SCOPE   A/D  PRESET   -/=  TINT   ,/.  INK   ENTER  APPLY   R  INHERIT   ESC  BACK"
-                    : "W/S  APP      A/D  FUNCTION      ENTER  RUN      T  THEME      ESC  CLOSE"
+                text: root.footerText
                 color: th.soft
                 font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 1
             }

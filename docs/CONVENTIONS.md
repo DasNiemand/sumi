@@ -27,7 +27,10 @@ Alias chuyển tiếp `clockwidget` và `confirm` giữ trong thời gian chuy�
   - **Look chung** (`theme, tint, inkDarken, scanlines, scanlineOpacity, glitch, scaleBoost, fonts`): `apps.<id>` rồi `global` rồi mặc định của lib.
   - `crtBootMs`, `crtOutroMs` là option riêng của từng app vì mặc định khác nhau (kakunin 800/460, jigen 900/460).
 - lib kẹp mọi giá trị số vào khoảng của schema trước khi dùng; giá trị sai kiểu bị bỏ qua và dùng mặc định.
-- **Font theo vai trò:** `title, label, data, numeral, kanji`. Mặc định giữ nguyên giao diện hiện tại: `title`=sans, `label`=sans, `data`=mono, `numeral`=mono, `kanji`=sans.
+- **Font theo vai trò:** `title, label, data, numeral, kanji`. Mặc định giữ nguyên giao diện hiện tại: `title`=sans, `label`=sans, `data`=mono, `numeral`=mono, `kanji`=font hệ thống.
+  Lưu dạng `global.fonts` / `apps.<id>.fonts` = `{ "<role>": "<family>" }`. Thiếu role = kế thừa (app, rồi global, rồi mặc định). Family là chuỗi 1..80 ký tự, không có `"`, `\` hay ký tự điều khiển. Hub không có font riêng, dùng font của `global`.
+  Hub lấy danh sách font từ `fc-list` (`%{family[0]}`, `%{spacing}` 100/110 = mono, `:lang=ja` = có glyph Nhật). Kanji chọn font không có glyph Nhật thì cảnh báo (không chặn).
+- **Keybind:** `apps.<id>.keybinds` = `{ "<action>": "<tên phím>" }`, tên là tên phím Qt bỏ `Key_` (`Y`, `Return`, `Space`, `Left`, `Comma`...; danh sách trong `SumiConfigEdit.keyNames`, khớp `SumiKeyMap`). Chỉ lưu phần khác mặc định; action `locked` không ghi được. Esc (cancel) và Tab/Backtab không gán được.
 
 ## 4. Theme
 - `colors.json` chứa palette thô. Màu cuối tính lúc chạy trong `lib/SumiTheme.qml` theo preset (`theme` trong config): `paper, ink, mono-white, mono-black, accent, follow`. Mặc định `paper`.
@@ -51,7 +54,7 @@ Alias chuyển tiếp `clockwidget` và `confirm` giữ trong thời gian chuy�
 - Escape luôn là `cancel`, locked, không gán lại.
 - Nhận phím sau ~180 ms kể từ khi mở, bỏ qua auto-repeat.
 - Phím mặc định không được trùng nhau trong cùng app (trừ `confirm` và `cancel` có thể dùng chung phím với action khác không xung đột).
-- Hub cảnh báo khi người dùng gán phím trùng.
+- Hub cảnh báo (không chặn Apply) khi: phím trùng action khác trong cùng app; gán phím app xử lý cố định cho action khác (`Return/Enter/Space`=confirm, mũi tên và `W/S`=nav); gán `1-3` trong app có nhiều function (dùng để nhảy function).
 
 ## 6. An toàn khi cài
 Validate trước khi rename vào `apps/`:
@@ -80,7 +83,7 @@ Validate trước khi rename vào `apps/`:
 ## 9. Hub
 - Hub **không phải app**: không có manifest, nằm ở `~/.local/share/sumi/hub/` và cũng giữ bản lib vendored riêng (`hub/lib/`).
 - Mở bằng `sumi hub` (chọn màn hình đang focus qua `hyprctl`, truyền cho hub bằng biến `SUMI_MONITOR`; đã mở thì không mở thêm).
-- Hub lấy dữ liệu từ `sumi list --json`: mảng các `{id, name, kanji, description, version, kind, running, dir, functions:[{id, label, ipc_name}]}`.
+- Hub lấy dữ liệu từ `sumi list --json`: mảng các `{id, name, kanji, description, version, kind, running, dir, functions:[{id, label, ipc_name}], keybinds:[{action, default, label, locked}], fonts:[...]}`. `fonts` là `manifest.fonts` nguyên văn (mảng tên vai trò); rỗng hoặc không nhận ra thì hub coi app dùng cả 5 vai trò.
   `running` = có tiến trình `-p <dir>/shell.qml`. Manifest hỏng thì app đó bị bỏ qua, không làm hỏng cả danh sách.
 - Hub chạy app bằng `Quickshell.execDetached([sumi, id, function])` rồi tự đóng để app nhận focus bàn phím.
 
@@ -88,3 +91,9 @@ Validate trước khi rename vào `apps/`:
 - **lib được vendor vào từng app** (`apps/<id>/lib/`, kèm file `VERSION`), vì Quickshell chỉ nhận import nằm trong thư mục chứa `shell.qml`. Repo app ghi `lib/` vào `.gitignore`. Hub cài hoặc cập nhật lib thì copy lại vào mọi app và kiểm tra `requires_lib`.
 - lib dùng semver. Đổi breaking trong Object API hoặc App API thì tăng major.
 - App khai báo `requires_lib`. Hub từ chối chạy app không khớp và báo `[INCOMPATIBLE]`.
+
+## 11. Cài đặt trong hub (GĐ2b)
+- Ba tab: THEME, FONT, KEYS (Tab / Shift+Tab / phím 1-3). Phạm vi: THEME = global, hub, các app; FONT = global và các app; KEYS = chỉ app có `keybinds`. Phạm vi chọn gần nhất được giữ khi đổi tab.
+- Mỗi tab có bản nháp riêng theo phạm vi; đổi phạm vi thì bỏ bản nháp chưa áp dụng. Dấu `*` trên tab = có thay đổi chưa áp dụng.
+- Mọi thay đổi đều ghi qua `sumi config apply` (xem mục 2), không bao giờ ghi trực tiếp. Config hiện có mà đọc không ra JSON thì hub từ chối ghi.
+- App oneshot (kakunin) đọc config mỗi lần chạy. App daemon (jigen) chỉ nhận giao diện, font, phím mới ở lần mở overlay kế tiếp sau khi reload.
