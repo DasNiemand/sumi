@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # sumi <app> [function]   chạy app (oneshot: chạy thẳng; daemon: khởi động nếu cần rồi gọi IPC)
+# sumi hub                mở hub (launcher) trên màn hình đang focus
+# sumi list [--json]      liệt kê app đã cài (JSON dùng cho hub)
 # sumi reset [--force]    sao lưu rồi xoá config.json (về mặc định)
 # sumi doctor             kiểm tra môi trường
 #
@@ -25,6 +27,42 @@ run_argv() {  # $1 = app dir ; in argv (mỗi phần tử một dòng) với {di
     printf '%s\n' "${argv[@]}"
 }
 
+cmd_list() {
+    need jq
+    local json='[]' d running obj
+    for d in "$SUMI_HOME"/apps/*/; do
+        d="${d%/}"
+        [ -f "$d/manifest.json" ] || continue
+        running=false
+        pgrep -f -- "-p $d/shell.qml" >/dev/null 2>&1 && running=true
+        # manifest hỏng thì bỏ qua app đó, không làm hỏng cả danh sách
+        obj="$(jq -c --argjson r "$running" --arg dir "$d" '{
+            id, name, kanji: (.kanji // ""), description: (.description // ""), version, kind,
+            running: $r, dir: $dir,
+            functions: [.functions[] | {id, label, ipc_name: (.ipc_name // .id)}]
+        }' "$d/manifest.json" 2>/dev/null)" || continue
+        [ -n "$obj" ] || continue
+        json="$(jq -c --argjson o "$obj" '. + [$o]' <<<"$json")"
+    done
+    if [ "${1:-}" = "--json" ]; then
+        printf '%s\n' "$json"
+    else
+        jq -r '.[] | "\(.id)\t\(.version)\t\(.kind)\t\(if .running then "running" else "-" end)"' <<<"$json"
+    fi
+}
+
+cmd_hub() {
+    local dir="$SUMI_HOME/hub"
+    [ -f "$dir/shell.qml" ] || die "hub chưa cài ($dir/shell.qml không tồn tại)"
+    # Đã mở rồi thì không mở thêm
+    pgrep -f -- "-p $dir/shell.qml" >/dev/null 2>&1 && exit 0
+    local mon=""
+    if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        mon="$(hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.focused) | .name' 2>/dev/null | head -n1)"
+    fi
+    SUMI_MONITOR="$mon" exec qs -p "$dir/shell.qml"
+}
+
 cmd_reset() {
     local force=0
     [ "${1:-}" = "--force" ] && force=1
@@ -45,6 +83,11 @@ cmd_doctor() {
         if command -v "$c" >/dev/null 2>&1; then echo "ok    $c"; else echo "THIẾU $c"; ok=0; fi
     done
     [ -d "$SUMI_HOME/lib" ] && echo "ok    lib: $SUMI_HOME/lib" || { echo "THIẾU lib: $SUMI_HOME/lib"; ok=0; }
+    if [ -f "$SUMI_HOME/hub/shell.qml" ]; then
+        echo "ok    hub lib=$(cat "$SUMI_HOME/hub/lib/VERSION" 2>/dev/null || echo THIẾU)"
+    else
+        echo "chưa có hub ($SUMI_HOME/hub)"
+    fi
     [ -f "$CFG_DIR/colors.json" ] && echo "ok    colors.json" || echo "chưa có colors.json (app dùng màu mặc định)"
     [ -f "$CFG_DIR/config.json" ] && echo "ok    config.json" || echo "chưa có config.json (app dùng mặc định)"
     local d
@@ -98,9 +141,11 @@ cmd_app() {
 }
 
 case "${1:-}" in
-    "")       die "dùng: sumi <app> [function] | sumi reset [--force] | sumi doctor" ;;
+    "")       die "dùng: sumi <app> [function] | sumi hub | sumi list [--json] | sumi reset [--force] | sumi doctor" ;;
+    hub)      cmd_hub ;;
+    list)     shift; cmd_list "$@" ;;
     reset)    shift; cmd_reset "$@" ;;
     doctor)   cmd_doctor ;;
-    -h|--help) echo "dùng: sumi <app> [function] | sumi reset [--force] | sumi doctor" ;;
+    -h|--help) echo "dùng: sumi <app> [function] | sumi hub | sumi list [--json] | sumi reset [--force] | sumi doctor" ;;
     *)        cmd_app "$@" ;;
 esac

@@ -37,8 +37,13 @@ if [ ! -f "$CFG_DIR/colors.json" ]; then
     done
 fi
 
-# 3. lib + app
+# 3. lib + hub + app
 copy_dir "$SRC/sumi/lib" "$SUMI_HOME/lib"
+if [ -d "$SRC/sumi/hub" ]; then
+    copy_dir "$SRC/sumi/hub" "$SUMI_HOME/hub"
+    copy_dir "$SRC/sumi/lib" "$SUMI_HOME/hub/lib"
+    echo "đã cài hub (lib $(cat "$SRC/sumi/lib/VERSION" 2>/dev/null || echo '?'))"
+fi
 for r in "$SRC"/sumi-*/; do
     r="${r%/}"
     [ -f "$r/manifest.json" ] || continue
