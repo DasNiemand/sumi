@@ -150,7 +150,8 @@
               "float",
               "enum",
               "intlist",
-              "string"
+              "string",
+              "stringlist"
             ]
           },
           "default": {},
@@ -273,6 +274,27 @@
                   "type": "array",
                   "items": {
                     "type": "integer"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "stringlist"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "default": {
+                  "type": "array",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.*?-]{1,64}$"
                   }
                 }
               }

@@ -6,6 +6,7 @@
 # sumi config apply <json|->   kiểm tra, sao lưu, ghi config.json nguyên tử (hub dùng)
 # sumi config backups          liệt kê bản sao lưu
 # sumi config restore [stamp]  khôi phục bản sao lưu (mặc định: mới nhất), có sao lưu bản hiện tại trước
+# sumi store <lệnh>       cửa hàng app: registry|inspect|install|update|remove|removed|restore (xem `sumi store help`)
 # sumi doctor             kiểm tra môi trường
 #
 # Không phụ thuộc hub: app oneshot (kakunin) được gọi từ script nên phải chạy nhanh, không đụng mạng.
@@ -32,19 +33,25 @@ run_argv() {  # $1 = app dir ; in argv (mỗi phần tử một dòng) với {di
 
 cmd_list() {
     need jq
-    local json='[]' d running obj
+    local json='[]' d running obj inst='{}'
+    if [ -f "$CFG_DIR/installed.json" ]; then
+        inst="$(jq -c '.apps // {}' "$CFG_DIR/installed.json" 2>/dev/null)" || inst='{}'
+        [ -n "$inst" ] || inst='{}'
+    fi
     for d in "$SUMI_HOME"/apps/*/; do
         d="${d%/}"
         [ -f "$d/manifest.json" ] || continue
         running=false
         pgrep -f -- "-p $d/shell.qml" >/dev/null 2>&1 && running=true
         # manifest hỏng thì bỏ qua app đó, không làm hỏng cả danh sách
-        obj="$(jq -c --argjson r "$running" --arg dir "$d" '{
+        obj="$(jq -c --argjson r "$running" --arg dir "$d" --argjson inst "$inst" '{
             id, name, kanji: (.kanji // ""), description: (.description // ""), version, kind,
             running: $r, dir: $dir,
+            source: ($inst[.id].source // "dev"), ref: ($inst[.id].ref // ""), sha: ($inst[.id].sha // ""),
             functions: [.functions[] | {id, label, ipc_name: (.ipc_name // .id)}],
             keybinds: [(.keybinds // [])[] | {action, default: (.default // ""), label: (.label // .action), locked: (.locked // false)}],
-            fonts: (.fonts // [])
+            fonts: (.fonts // []),
+            options: [(.options // [])[] | {key, type, default, label: (.label // .key), locked: (.locked // false)} + (if has("min") then {min} else {} end) + (if has("max") then {max} else {} end) + (if has("values") then {values} else {} end)]
         }' "$d/manifest.json" 2>/dev/null)" || continue
         [ -n "$obj" ] || continue
         json="$(jq -c --argjson o "$obj" '. + [$o]' <<<"$json")"
@@ -161,6 +168,13 @@ cmd_config() {
     esac
 }
 
+cmd_store() {
+    local self; self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+    local bin; bin="$(dirname "$self")/sumi-store"
+    [ -x "$bin" ] || die "thiếu $bin (chạy lại install-dev.sh)"
+    exec "$bin" "$@"
+}
+
 cmd_doctor() {
     local ok=1
     for c in jq quickshell qs hyprctl; do
@@ -225,12 +239,13 @@ cmd_app() {
 }
 
 case "${1:-}" in
-    "")       die "dùng: sumi <app> [function] | sumi hub | sumi list [--json] | sumi reset [--force] | sumi config apply|backups|restore | sumi doctor" ;;
+    "")       die "dùng: sumi <app> [function] | sumi hub | sumi list [--json] | sumi reset [--force] | sumi config apply|backups|restore | sumi store ... | sumi doctor" ;;
     hub)      cmd_hub ;;
     list)     shift; cmd_list "$@" ;;
     reset)    shift; cmd_reset "$@" ;;
     config)   shift; cmd_config "$@" ;;
+    store)    shift; cmd_store "$@" ;;
     doctor)   cmd_doctor ;;
-    -h|--help) echo "dùng: sumi <app> [function] | sumi hub | sumi list [--json] | sumi reset [--force] | sumi config apply|backups|restore | sumi doctor" ;;
+    -h|--help) echo "dùng: sumi <app> [function] | sumi hub | sumi list [--json] | sumi reset [--force] | sumi config apply|backups|restore | sumi store ... | sumi doctor" ;;
     *)        cmd_app "$@" ;;
 esac

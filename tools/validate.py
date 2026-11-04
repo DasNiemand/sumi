@@ -38,6 +38,8 @@ def manifest_rules(m):
         if t in ("int", "float") and not (o["min"] <= d <= o["max"]): e.append(f"options/{o['key']}: default ngoài [min,max]")
         if t == "intlist" and not all(o["min"] <= x <= o["max"] for x in d): e.append(f"options/{o['key']}: phần tử default ngoài [min,max]")
         if t in ("int", "float", "intlist") and o["min"] > o["max"]: e.append(f"options/{o['key']}: min > max")
+        if t == "intlist" and not (1 <= len(d) <= 16): e.append(f"options/{o['key']}: intlist cần 1..16 phần tử")
+        if t == "stringlist" and not all(re.fullmatch(r"[A-Za-z0-9_.*?-]{1,64}", x) for x in d): e.append(f"options/{o['key']}: phần tử stringlist chỉ gồm chữ/số và _ . * ? - (1..64 ký tự)")
         if t == "enum" and d not in o["values"]: e.append(f"options/{o['key']}: default không nằm trong values")
     acts = [k["action"] for k in m["keybinds"]]
     if len(acts) != len(set(acts)): e.append("keybinds: action trùng")

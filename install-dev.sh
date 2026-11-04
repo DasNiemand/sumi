@@ -52,9 +52,15 @@ for r in "$SRC"/sumi-*/; do
     # Quickshell chỉ nhận type trong thư mục chứa shell.qml -> mỗi app giữ một bản lib/ riêng (vendored).
     copy_dir "$SRC/sumi/lib" "$SUMI_HOME/apps/$id/lib"
     echo "đã cài app: $id (lib $(cat "$SRC/sumi/lib/VERSION" 2>/dev/null || echo '?'))"
+    # Bản dev ghi đè bản store: bỏ bản ghi trong installed.json để store coi đây là app dev.
+    if [ -f "$CFG_DIR/installed.json" ]; then
+        jq --arg id "$id" 'del(.apps[$id])' "$CFG_DIR/installed.json" >"$CFG_DIR/installed.json.tmp" \
+            && mv -f "$CFG_DIR/installed.json.tmp" "$CFG_DIR/installed.json"
+    fi
 done
 
 # 4. lệnh sumi
 install -m 0755 "$SRC/sumi/bin/sumi" "$BIN_DIR/sumi"
-echo "đã cài $BIN_DIR/sumi"
+install -m 0755 "$SRC/sumi/bin/sumi-store" "$BIN_DIR/sumi-store"
+echo "đã cài $BIN_DIR/sumi và $BIN_DIR/sumi-store"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "lưu ý: $BIN_DIR chưa nằm trong PATH" ;; esac

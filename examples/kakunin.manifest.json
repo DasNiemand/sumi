@@ -15,7 +15,8 @@
   "options": [
     { "key": "acceptKeysDelayMs", "type": "int", "default": 180, "min": 0, "max": 1000, "label": "KEY GUARD MS" },
     { "key": "crtBootMs", "type": "int", "default": 800, "min": 0, "max": 3000, "label": "CRT BOOT MS" },
-    { "key": "crtOutroMs", "type": "int", "default": 460, "min": 0, "max": 3000, "label": "CRT OUTRO MS" }
+    { "key": "crtOutroMs", "type": "int", "default": 460, "min": 0, "max": 3000, "label": "CRT OUTRO MS" },
+    { "key": "protectedClasses", "type": "stringlist", "default": ["zen*", "Minecraft*"], "label": "PROTECTED WINDOW CLASSES" }
   ],
   "keybinds": [
     { "action": "yes", "default": "Y", "label": "YES" },

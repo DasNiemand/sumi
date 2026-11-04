@@ -1,0 +1,577 @@
+#!/usr/bin/env bash
+# sumi-store: cửa hàng app của SUMI (gọi qua `sumi store ...`, hub dùng với --json).
+#
+#   registry [--refresh]                  danh sách app trong registry + trạng thái (available|installed|update|dev)
+#   inspect <id>                          clone tạm, kiểm tra, in thông tin cho màn hình xác nhận (không cài gì)
+#   install <id> --sha <sha> [--replace]  cài (sha = SHA người dùng đã xác nhận ở màn inspect)
+#   update  <id> --sha <sha>              cập nhật (bản cũ được giữ trong backups/removed/)
+#   remove  <id> [--force]                gỡ app (chuyển vào backups/removed/), giữ nguyên config
+#   removed [<id>]                        liệt kê bản sao lưu app đã gỡ/đã thay
+#   restore <id> [stamp]                  khôi phục bản sao lưu (mặc định: mới nhất)
+#
+# Mã thoát: 0 ok | 1 lỗi chung | 2 sai cú pháp | 3 app đang chạy | 4 lib không tương thích
+#           5 không qua kiểm tra (sha/tag/manifest/cấu trúc) | 6 offline | 7 xung đột (đã cài / bản dev / chưa cài)
+# Với --json: luôn in đúng MỘT đối tượng/mảng JSON ra stdout; lỗi là {"ok":false,"code":...,"message":...}.
+#
+# Biến môi trường chỉ dùng cho test: SUMI_STORE_TEST=1 (cho phép file://), SUMI_GIT_BASE, SUMI_REGISTRY_URL.
+set -u
+
+SUMI_HOME="${SUMI_HOME:-$HOME/.local/share/sumi}"
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sumi"
+REG_DEFAULT="https://raw.githubusercontent.com/DasNiemand/sumi-index/main/index.json"
+GIT_BASE="${SUMI_GIT_BASE:-https://github.com}"
+TEST="${SUMI_STORE_TEST:-0}"
+JSON=0
+STAGE=""
+KEEP_STAGE=0
+
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>/tmp/sumi.log 2>/dev/null || true; }
+
+cleanup() { [ -n "$STAGE" ] && [ "$KEEP_STAGE" != 1 ] && rm -rf -- "$STAGE"; return 0; }
+trap cleanup EXIT
+
+fail() {  # fail <code> <exit> <message...>
+    local code="$1" ex="$2"; shift 2
+    local msg="$*"
+    log "store: lỗi $code: $msg"
+    if [ "$JSON" = 1 ]; then
+        jq -cn --arg c "$code" --arg m "$msg" '{ok:false,code:$c,message:$m}'
+    else
+        echo "sumi store: $msg" >&2
+    fi
+    exit "$ex"
+}
+
+command -v jq >/dev/null 2>&1 || { echo "sumi store: thiếu lệnh 'jq'" >&2; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "sumi store: thiếu lệnh 'git'" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "sumi store: thiếu lệnh 'curl'" >&2; exit 1; }
+
+emit() {  # emit <json> <bộ lọc jq cho chế độ người đọc>
+    if [ "$JSON" = 1 ]; then printf '%s\n' "$1"; else jq -r "$2" <<<"$1"; fi
+}
+
+arr_json() { if [ "$#" -eq 0 ]; then echo '[]'; else printf '%s\n' "$@" | jq -R . | jq -sc .; fi; }
+
+stamp() { date +%Y%m%d-%H%M%S; }
+
+valid_id() { [[ "${1:-}" =~ ^[a-z][a-z0-9-]{1,31}$ ]]; }
+
+lock() {
+    mkdir -p "$CFG_DIR"
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$CFG_DIR/sumi.lock"
+        flock -w 5 9 || fail busy 1 "đang có thao tác khác giữ sumi.lock"
+    fi
+}
+
+is_running() { pgrep -f -- "-p $SUMI_HOME/apps/$1/shell.qml" >/dev/null 2>&1; }
+
+# ---------- installed.json ----------
+INST_FILE="$CFG_DIR/installed.json"
+inst_read() {
+    if [ ! -f "$INST_FILE" ]; then echo '{"version":1,"apps":{}}'; return 0; fi
+    jq -ce 'select(type=="object" and .version==1 and (.apps|type=="object"))' "$INST_FILE" 2>/dev/null \
+        || fail installed_corrupt 1 "installed.json hỏng ($INST_FILE). Sửa hoặc xoá file rồi chạy lại."
+}
+inst_write() {  # $1 = JSON mới
+    local tmp
+    mkdir -p "$CFG_DIR"
+    tmp="$(mktemp "$CFG_DIR/installed.json.XXXXXX")" || fail io 1 "không tạo được file tạm"
+    if ! printf '%s' "$1" | jq '.' >"$tmp" 2>/dev/null; then rm -f "$tmp"; fail io 1 "ghi installed.json thất bại"; fi
+    mv -f "$tmp" "$INST_FILE" || { rm -f "$tmp"; fail io 1 "đổi tên installed.json thất bại"; }
+}
+
+# ---------- registry ----------
+REG_JSON=""; REG_STALE=false; REG_FETCHED=0
+index_ok() {  # $1 = body
+    printf '%s' "$1" | jq -e '
+        try (
+          type=="object" and .version==1 and ((keys - ["version","apps"])|length==0) and (.apps|type=="array")
+          and ([.apps[] | type=="object" and ((keys - ["id","repo","ref","sha"])|length==0)
+                and (.id|type=="string" and test("^[a-z][a-z0-9-]{1,31}$"))
+                and (.repo|type=="string" and test("^github\\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"))
+                and (.ref|type=="string" and test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+                and (.sha|type=="string" and test("^[0-9a-f]{40}$"))
+                and ((.repo|split("/")[2]) == ("sumi-" + .id))] | all)
+          and (([.apps[].id]|unique|length) == (.apps|length))
+        ) catch false' >/dev/null 2>&1
+}
+
+fetch_registry() {  # fetch_registry [force]
+    local force="${1:-0}" url ttl cache="$CFG_DIR/registry-cache.json" now fetched body tmp
+    url="${SUMI_REGISTRY_URL:-}"
+    [ -n "$url" ] || url="$(jq -r '.hub.registryUrl // empty' "$CFG_DIR/config.json" 2>/dev/null)"
+    [ -n "$url" ] || url="$REG_DEFAULT"
+    local re='^https://raw\.githubusercontent\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$'
+    if [ "$TEST" != 1 ] && ! [[ "$url" =~ $re ]]; then fail registry_url 1 "registryUrl không hợp lệ: $url"; fi
+
+    ttl="$(jq -r '.hub.checkUpdateHours // empty' "$CFG_DIR/config.json" 2>/dev/null)"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=6
+    [ "$ttl" -lt 1 ] && ttl=1
+    [ "$ttl" -gt 168 ] && ttl=168
+
+    now="$(date +%s)"
+    fetched="$(jq -r --arg u "$url" 'select(.url == $u and (.index|type=="object")) | .fetched_at // 0' "$cache" 2>/dev/null)"
+    [[ "$fetched" =~ ^[0-9]+$ ]] || fetched=0
+
+    if [ "$force" != 1 ] && [ "$fetched" -gt 0 ] && [ $((now - fetched)) -lt $((ttl * 3600)) ]; then
+        body="$(jq -c '.index' "$cache")"
+        if index_ok "$body"; then REG_JSON="$body"; REG_STALE=false; REG_FETCHED="$fetched"; return 0; fi
+    fi
+
+    local -a copts=(-fsSL --max-time 5 --max-filesize 1048576)
+    [ "$TEST" = 1 ] || copts+=(--proto '=https' --proto-redir '=https')
+    if body="$(curl "${copts[@]}" "$url" 2>/dev/null)"; then
+        index_ok "$body" || fail registry_invalid 5 "index.json từ registry không hợp lệ (sai schema, id trùng, hoặc sha không phải 40 hex)"
+        REG_JSON="$(printf '%s' "$body" | jq -c .)"; REG_STALE=false; REG_FETCHED="$now"
+        mkdir -p "$CFG_DIR"
+        tmp="$(mktemp "$CFG_DIR/registry-cache.json.XXXXXX")" && {
+            jq -cn --arg u "$url" --argjson t "$now" --argjson i "$REG_JSON" '{url:$u,fetched_at:$t,index:$i}' >"$tmp" \
+                && mv -f "$tmp" "$cache" || rm -f "$tmp"
+        }
+        return 0
+    fi
+    # Offline / lỗi mạng: dùng cache cũ nếu có (cùng URL), chỉ báo, không lỗi.
+    if [ "$fetched" -gt 0 ]; then
+        body="$(jq -c '.index' "$cache")"
+        if index_ok "$body"; then REG_JSON="$body"; REG_STALE=true; REG_FETCHED="$fetched"; return 0; fi
+    fi
+    fail offline 6 "không tải được registry (offline?) và chưa có cache"
+}
+
+reg_entry() {  # reg_entry <id> -> JSON một app hoặc rỗng
+    jq -c --arg id "$1" '.apps[] | select(.id == $id)' <<<"$REG_JSON"
+}
+
+# ---------- git ----------
+repo_url() { printf '%s/%s.git' "$GIT_BASE" "${1#github.com/}"; }
+
+git_safe() {
+    local protos="https"
+    [ "$TEST" = 1 ] && protos="https:file"
+    GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL="$protos" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        timeout "${TMO:-60}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+}
+
+check_tag() {  # check_tag <repo> <ref> <sha> : tag phải tồn tại và trỏ đúng commit đã ghim
+    local url out sha
+    url="$(repo_url "$1")"
+    out="$(TMO=8 git_safe ls-remote "$url" "refs/tags/$2" "refs/tags/$2^{}" 2>/dev/null)" \
+        || fail offline 6 "không kết nối được tới $1 (offline? repo riêng tư?)"
+    sha="$(awk '$2 ~ /\^\{\}$/ {print $1; exit}' <<<"$out")"
+    [ -n "$sha" ] || sha="$(awk '{print $1; exit}' <<<"$out")"
+    [ -n "$sha" ] || fail tag_missing 5 "repo $1 không có tag $2"
+    [ "$sha" = "$3" ] || fail tag_moved 5 "tag $2 của $1 trỏ tới ${sha:0:12}, registry ghim ${3:0:12}. Từ chối (tag bị dời hoặc registry cũ)."
+}
+
+stage_clone() {  # stage_clone <id> <repo> <ref> <sha> : điền STAGE, clone vào $STAGE/src và xác minh SHA
+    local id="$1" repo="$2" ref="$3" sha="$4" head
+    mkdir -p "$SUMI_HOME/.staging" || fail io 1 "không tạo được $SUMI_HOME/.staging"
+    find "$SUMI_HOME/.staging" -mindepth 1 -maxdepth 1 -mmin +120 -exec rm -rf {} + 2>/dev/null
+    STAGE="$(mktemp -d "$SUMI_HOME/.staging/$id.XXXXXX")" || fail io 1 "không tạo được thư mục tạm"
+    git_safe clone --quiet --depth 1 --branch "$ref" --no-tags --single-branch "$(repo_url "$repo")" "$STAGE/src" >/dev/null 2>&1 \
+        || fail clone 6 "clone $repo ($ref) thất bại"
+    head="$(git -C "$STAGE/src" rev-parse HEAD 2>/dev/null)"
+    [ "$head" = "$sha" ] || fail sha_mismatch 5 "SHA của bản clone (${head:0:12}) khác SHA trong registry (${sha:0:12}). Đã huỷ."
+    rm -rf "$STAGE/src/.git"
+}
+
+# ---------- kiểm tra bản clone ----------
+ERRS=(); WARN=()
+validate_stage() {  # validate_stage <dir> <id> -> điền ERRS/WARN ; trả 1 nếu có lỗi
+    local d="$1" id="$2" m="$1/manifest.json" l o n size
+    ERRS=(); WARN=()
+    if [ ! -f "$m" ] || [ -L "$m" ]; then ERRS+=("thiếu manifest.json"); return 1; fi
+    jq -e 'type=="object"' "$m" >/dev/null 2>&1 || { ERRS+=("manifest.json không phải JSON object hợp lệ"); return 1; }
+
+    while IFS= read -r l; do [ -n "$l" ] && ERRS+=("$l"); done < <(jq -r --arg id "$id" '
+        def bad: type=="string" and (test("\\.\\.") or startswith("/") or test("\\\\"));
+        [
+          (if .id != $id then "id trong manifest khác id trong registry" else empty end),
+          (if (.kind|IN("oneshot","daemon")|not) then "kind phải là oneshot hoặc daemon" else empty end),
+          (if (((.version|type)=="string") and (.version|test("^[0-9]+\\.[0-9]+\\.[0-9]+$")))|not then "version không hợp lệ" else empty end),
+          (if .ipc_target != ("sumi-" + $id) then "ipc_target phải là sumi-<id>" else empty end),
+          (if (((.run|type)=="string") and (.run|test("^(qs|quickshell) -p \\{dir\\}/shell\\.qml$")))|not
+             then "run chỉ được là: qs -p {dir}/shell.qml (hoặc quickshell -p {dir}/shell.qml)" else empty end),
+          (if (((.requires_lib|type)=="string") and (.requires_lib|test("^(>=|>|<=|<|=)?[0-9]+\\.[0-9]+(\\.[0-9]+)?( (>=|>|<=|<|=)?[0-9]+\\.[0-9]+(\\.[0-9]+)?)*$")))|not
+             then "requires_lib không hợp lệ" else empty end),
+          (if (((.functions|type)=="array") and ((.functions|length) >= 1) and ([.functions[] | type=="object" and ((.id|type)=="string")] | all))|not
+             then "functions phải là mảng không rỗng, mỗi phần tử có id" else empty end),
+          (if (((.requires|type)=="array") and ((.shell_commands|type)=="array"))|not then "requires và shell_commands phải là mảng" else empty end),
+          (if ([del(.description) | .. | strings | select(bad)] | length) > 0
+             then "manifest có chuỗi chứa .. hoặc bắt đầu bằng / hoặc chứa \\" else empty end)
+        ] | .[]' "$m" 2>/dev/null)
+
+    [ -f "$d/View.qml" ] && [ ! -L "$d/View.qml" ] || ERRS+=("thiếu View.qml")
+    [ -f "$d/shell.qml" ] && [ ! -L "$d/shell.qml" ] || ERRS+=("thiếu shell.qml")
+    while IFS= read -r o; do
+        [ -n "$o" ] || continue
+        [[ "$o" =~ ^[A-Za-z0-9_-]+$ ]] || { ERRS+=("tên object không hợp lệ: $o"); continue; }
+        [ -f "$d/objects/$o.qml" ] || ERRS+=("thiếu objects/$o.qml (khai trong manifest)")
+    done < <(jq -r '[.functions[]? | .objects[]?] | unique | .[]' "$m" 2>/dev/null)
+
+    l="$(find "$d" -type l 2>/dev/null | head -n3 | tr '\n' ' ')"
+    [ -z "$l" ] || ERRS+=("có symlink (không cho phép): $l")
+    l="$(find "$d" ! -type f ! -type d ! -type l 2>/dev/null | head -n3 | tr '\n' ' ')"
+    [ -z "$l" ] || ERRS+=("có file đặc biệt (không cho phép): $l")
+    size="$(du -sb "$d" 2>/dev/null | cut -f1)"; size="${size:-0}"
+    [ "$size" -le 5242880 ] || ERRS+=("dung lượng $size byte vượt giới hạn 5 MiB")
+    n="$(find "$d" -type f 2>/dev/null | wc -l)"
+    [ "$n" -le 300 ] || ERRS+=("có $n file, vượt giới hạn 300")
+
+    l="$(find "$d" -type f \( -perm /111 -o -name '*.sh' -o -name '*.py' \) -printf '%P ' 2>/dev/null | cut -c1-200)"
+    [ -z "$l" ] || WARN+=("repo có file thực thi/script: $l")
+    [ ! -e "$d/lib" ] || WARN+=("repo có thư mục lib/; sẽ bị thay bằng lib của SUMI")
+    [ "${#ERRS[@]}" -eq 0 ]
+}
+
+ver_num() { local IFS=.; set -- $1; echo $(( 10#${1:-0} * 1000000 + 10#${2:-0} * 1000 + 10#${3:-0} )); }
+lib_satisfies() {  # lib_satisfies <version> <range>
+    local v="$1" range="$2" c op n vn rn
+    vn="$(ver_num "$v")"
+    for c in $range; do
+        op="${c%%[0-9]*}"; n="${c#"$op"}"; rn="$(ver_num "$n")"
+        [ -n "$op" ] || op="="
+        case "$op" in
+            ">=") [ "$vn" -ge "$rn" ] ;;
+            ">")  [ "$vn" -gt "$rn" ] ;;
+            "<=") [ "$vn" -le "$rn" ] ;;
+            "<")  [ "$vn" -lt "$rn" ] ;;
+            "=")  [ "$vn" -eq "$rn" ] ;;
+            *)    return 1 ;;
+        esac || return 1
+    done
+    return 0
+}
+
+lib_version() { cat "$SUMI_HOME/lib/VERSION" 2>/dev/null | tr -d '[:space:]'; }
+
+req_status() {  # ok | missing | unknown
+    local n="$1"
+    [[ "$n" =~ ^[A-Za-z0-9@._+-]+$ ]] || { echo unknown; return; }
+    if command -v pacman >/dev/null 2>&1; then
+        if pacman -T "$n" >/dev/null 2>&1; then echo ok; else echo missing; fi
+        return
+    fi
+    if command -v "$n" >/dev/null 2>&1; then echo ok; else echo unknown; fi
+}
+
+# ---------- thay thư mục app (dùng chung cho install/update/restore) ----------
+unique_backup() {  # unique_backup <id> -> in đường dẫn chưa tồn tại
+    local base="$CFG_DIR/backups/removed/$1-$(stamp)" p n=0
+    p="$base"
+    while [ -e "$p" ]; do n=$((n + 1)); p="$base-$n"; done
+    echo "$p"
+}
+
+# Chuyển $dest hiện có vào backups/removed/<id>-<stamp>/ (kèm .sumi-record.json), rồi đặt $1 vào $dest.
+swap_in() {  # swap_in <src> <id>
+    local src="$1" id="$2" dest="$SUMI_HOME/apps/$2" old bk rec
+    mkdir -p "$SUMI_HOME/apps" "$CFG_DIR/backups/removed" || { KEEP_STAGE=1; fail io 1 "không tạo được thư mục đích"; }
+    if [ -e "$dest" ]; then
+        old="$STAGE/old"
+        mv "$dest" "$old" || { KEEP_STAGE=1; fail io 1 "không dời được bản hiện tại"; }
+        if ! mv "$src" "$dest"; then
+            mv "$old" "$dest" 2>/dev/null
+            KEEP_STAGE=1; fail io 1 "không đặt được bản mới vào $dest (đã trả bản cũ về chỗ cũ)"
+        fi
+        rec="$(inst_read | jq -c --arg id "$id" '.apps[$id] // {source:"dev"}')"
+        printf '%s\n' "$rec" >"$old/.sumi-record.json" 2>/dev/null
+        bk="$(unique_backup "$id")"
+        if mv "$old" "$bk"; then
+            SWAP_BACKUP="$bk"
+        else
+            KEEP_STAGE=1
+            SWAP_BACKUP="$old"
+            log "store: không chuyển được bản cũ của $id vào backups, giữ ở $old"
+        fi
+    else
+        mv "$src" "$dest" || { KEEP_STAGE=1; fail io 1 "không đặt được app vào $dest"; }
+        SWAP_BACKUP=""
+    fi
+}
+SWAP_BACKUP=""
+
+prune_removed() {  # giữ tối đa 5 bản gần nhất cho mỗi id
+    local id d i
+    [ -d "$CFG_DIR/backups/removed" ] || return 0
+    for id in $(ls -1 "$CFG_DIR/backups/removed" 2>/dev/null | sed -E 's/-[0-9]{8}-[0-9]{6}(-[0-9]+)?$//' | sort -u); do
+        i=0
+        while IFS= read -r d; do
+            i=$((i + 1))
+            [ "$i" -gt 5 ] && rm -rf -- "$CFG_DIR/backups/removed/$d"
+        done < <(ls -1 "$CFG_DIR/backups/removed" | grep -E "^$id-[0-9]{8}-[0-9]{6}(-[0-9]+)?\$" | sort -r)
+    done
+}
+
+# ---------- lệnh ----------
+cmd_registry() {
+    local force=0 a
+    for a in "$@"; do [ "$a" = "--refresh" ] && force=1; done
+    fetch_registry "$force"
+    local inst apps='[]' e id repo ref sha state dir rec iv isha iref run obj
+    inst="$(inst_read)"
+    while IFS= read -r e; do
+        [ -n "$e" ] || continue
+        id="$(jq -r .id <<<"$e")"
+        dir="$SUMI_HOME/apps/$id"
+        rec="$(jq -c --arg id "$id" '.apps[$id] // empty' <<<"$inst")"
+        iv=""; iref=""; isha=""; run=false
+        if [ -f "$dir/manifest.json" ]; then
+            iv="$(jq -r '.version // empty' "$dir/manifest.json" 2>/dev/null)"
+            is_running "$id" && run=true
+            if [ -n "$rec" ]; then
+                iref="$(jq -r '.ref // empty' <<<"$rec")"; isha="$(jq -r '.sha // empty' <<<"$rec")"
+                if [ "$isha" = "$(jq -r .sha <<<"$e")" ]; then state=installed; else state=update; fi
+            else
+                state=dev
+            fi
+        else
+            state=available
+        fi
+        obj="$(jq -c --arg st "$state" --arg iv "$iv" --arg ir "$iref" --arg is "$isha" --argjson run "$run" \
+            '. + {state:$st, installed_version:$iv, installed_ref:$ir, installed_sha:$is, running:$run}' <<<"$e")"
+        apps="$(jq -c --argjson o "$obj" '. + [$o]' <<<"$apps")"
+    done < <(jq -c '.apps[]' <<<"$REG_JSON")
+    local out
+    out="$(jq -cn --argjson apps "$apps" --argjson stale "$REG_STALE" --argjson t "$REG_FETCHED" \
+        '{ok:true, stale:$stale, fetched_at:$t, apps:$apps}')"
+    emit "$out" '(if .stale then "(offline: dùng cache cũ)" else empty end),
+        (.apps[] | "\(.id)\t\(.ref)\t\(.state)\(if .installed_version != "" then "  (đang có \(.installed_version))" else "" end)")'
+}
+
+# Dùng chung cho inspect/install/update: kiểm tag, clone, xác minh, validate, kiểm lib.
+prepare_stage() {  # prepare_stage <id> -> điền ENTRY, STAGE ; kết quả validate trong ERRS/WARN
+    local id="$1"
+    ENTRY="$(reg_entry "$id")"
+    [ -n "$ENTRY" ] || fail not_in_registry 5 "'$id' không có trong registry"
+    E_REPO="$(jq -r .repo <<<"$ENTRY")"; E_REF="$(jq -r .ref <<<"$ENTRY")"; E_SHA="$(jq -r .sha <<<"$ENTRY")"
+    check_tag "$E_REPO" "$E_REF" "$E_SHA"
+    stage_clone "$id" "$E_REPO" "$E_REF" "$E_SHA"
+    validate_stage "$STAGE/src" "$id"
+    VALID=$?
+    LIB_NOW="$(lib_version)"
+    LIB_REQ="$(jq -r '.requires_lib // ""' "$STAGE/src/manifest.json" 2>/dev/null)"
+    if [ -n "$LIB_NOW" ] && [ -n "$LIB_REQ" ] && lib_satisfies "$LIB_NOW" "$LIB_REQ"; then COMPAT=true; else COMPAT=false; fi
+}
+
+cmd_inspect() {
+    local id="${1:-}"
+    valid_id "$id" || fail usage 2 "dùng: sumi store inspect <id>"
+    fetch_registry 0
+    prepare_stage "$id"
+    if [ "$VALID" -ne 0 ]; then
+        if [ "$JSON" = 1 ]; then
+            jq -cn --argjson e "$(arr_json "${ERRS[@]}")" '{ok:false, code:"invalid", message:"bản clone không hợp lệ", errors:$e}'
+        else
+            echo "sumi store: '$id' không hợp lệ:" >&2; printf '  - %s\n' "${ERRS[@]}" >&2
+        fi
+        log "store: inspect $id: không hợp lệ: ${ERRS[*]}"
+        exit 5
+    fi
+    local m="$STAGE/src/manifest.json" reqs='[]' r st conflict="none" cur=""
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        st="$(req_status "$r")"
+        reqs="$(jq -c --arg n "$r" --arg s "$st" '. + [{name:$n,status:$s}]' <<<"$reqs")"
+    done < <(jq -r '.requires[]' "$m")
+    if [ -e "$SUMI_HOME/apps/$id" ]; then
+        if jq -e --arg id "$id" '.apps[$id]' <<<"$(inst_read)" >/dev/null 2>&1; then conflict="installed"; else conflict="dev"; fi
+        cur="$(jq -r '.version // empty' "$SUMI_HOME/apps/$id/manifest.json" 2>/dev/null)"
+    fi
+    local size nfiles out
+    size="$(du -sb "$STAGE/src" | cut -f1)"; nfiles="$(find "$STAGE/src" -type f | wc -l)"
+    out="$(jq -c --arg repo "$E_REPO" --arg ref "$E_REF" --arg sha "$E_SHA" --argjson reqs "$reqs" \
+        --arg lreq "$LIB_REQ" --arg lnow "$LIB_NOW" --argjson compat "$COMPAT" --arg conflict "$conflict" --arg cur "$cur" \
+        --argjson warn "$(arr_json "${WARN[@]}")" --argjson size "$size" --argjson nfiles "$nfiles" \
+        '{ok:true, id, name:(.name // .id), kanji:(.kanji // ""), description:(.description // ""), version, kind,
+          repo:$repo, url:("https://" + $repo), ref:$ref, sha:$sha,
+          requires:$reqs, shell_commands:(.shell_commands // []),
+          lib:{required:$lreq, installed:$lnow, compatible:$compat},
+          conflict:$conflict, installed_version:$cur, warnings:$warn, size_bytes:$size, file_count:$nfiles}' "$m")"
+    emit "$out" '"\(.name) \(.kanji)  v\(.version)  (\(.kind))\n\(.description)\nNguồn: \(.url)\nTag:   \(.ref)\nSHA:   \(.sha)\nLib:   cần \(.lib.required), có \(.lib.installed) -> \(if .lib.compatible then "OK" else "[INCOMPATIBLE]" end)\nLệnh shell app có thể chạy: \(if (.shell_commands|length)==0 then "(không có)" else "" end)\n\(.shell_commands | map("  - " + .) | join("\n"))\nGói hệ thống cần: \(if (.requires|length)==0 then "(không có)" else "" end)\n\(.requires | map("  - \(.name): \(.status)") | join("\n"))\nXung đột: \(.conflict)\(if (.warnings|length)>0 then "\nCảnh báo:\n" + (.warnings | map("  ! " + .) | join("\n")) else "" end)"'
+}
+
+parse_sha_args() {  # đặt ARG_ID, ARG_SHA, ARG_REPLACE, ARG_FORCE
+    ARG_ID=""; ARG_SHA=""; ARG_REPLACE=0; ARG_FORCE=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --sha) shift; ARG_SHA="${1:-}" ;;
+            --replace) ARG_REPLACE=1 ;;
+            --force) ARG_FORCE=1 ;;
+            -*) fail usage 2 "tuỳ chọn không biết: $1" ;;
+            *) [ -z "$ARG_ID" ] && ARG_ID="$1" || fail usage 2 "thừa đối số: $1" ;;
+        esac
+        shift || true
+    done
+}
+
+do_install() {  # do_install <install|update> <args...>
+    local mode="$1"; shift
+    parse_sha_args "$@"
+    valid_id "$ARG_ID" || fail usage 2 "dùng: sumi store $mode <id> --sha <sha>$([ "$mode" = install ] && echo ' [--replace]')"
+    [[ "$ARG_SHA" =~ ^[0-9a-f]{40}$ ]] || fail usage 2 "thiếu --sha <40 ký tự hex> (SHA đã xác nhận ở màn inspect)"
+    local id="$ARG_ID" dest="$SUMI_HOME/apps/$ARG_ID" rec has_dir=0 has_rec=0
+    lock
+    [ -e "$dest" ] && has_dir=1
+    rec="$(inst_read | jq -c --arg id "$id" '.apps[$id] // empty')"
+    [ -n "$rec" ] && has_rec=1
+
+    fetch_registry 0
+    ENTRY="$(reg_entry "$id")"
+    [ -n "$ENTRY" ] || fail not_in_registry 5 "'$id' không có trong registry"
+    [ "$(jq -r .sha <<<"$ENTRY")" = "$ARG_SHA" ] \
+        || fail registry_changed 5 "SHA trong registry đã đổi so với bản bạn đã xác nhận. Mở lại màn xác nhận."
+    is_running "$id" && fail running 3 "'$id' đang chạy. Tắt app trước rồi thử lại."
+
+    if [ "$mode" = install ]; then
+        if [ "$has_dir" = 1 ] && [ "$has_rec" = 1 ]; then fail already_installed 7 "'$id' đã cài từ store. Dùng update."; fi
+        if [ "$has_dir" = 1 ] && [ "$ARG_REPLACE" != 1 ]; then
+            fail dev_installed 7 "'$id' đã có sẵn (bản dev, không do store quản lý). Dùng --replace để thay bằng bản store (bản cũ được sao lưu)."
+        fi
+    else
+        [ "$has_dir" = 1 ] && [ "$has_rec" = 1 ] || fail not_installed 7 "'$id' chưa được cài từ store, không thể update."
+        if [ "$(jq -r .sha <<<"$rec")" = "$ARG_SHA" ]; then
+            emit "$(jq -cn --arg id "$id" '{ok:true,noop:true,id:$id,message:"đã ở bản mới nhất"}')" '"\(.id): đã ở bản mới nhất"'
+            return 0
+        fi
+    fi
+
+    prepare_stage "$id"
+    if [ "$VALID" -ne 0 ]; then
+        fail invalid 5 "bản clone không hợp lệ: $(IFS='; '; echo "${ERRS[*]}")"
+    fi
+    if [ "$COMPAT" != true ]; then
+        fail incompatible 4 "[INCOMPATIBLE] app cần lib $LIB_REQ, hiện có ${LIB_NOW:-không có}"
+    fi
+
+    # vendored lib: Quickshell chỉ nhận type trong thư mục chứa shell.qml
+    [ -d "$SUMI_HOME/lib" ] || fail no_lib 1 "chưa có $SUMI_HOME/lib"
+    rm -rf "$STAGE/src/lib"
+    cp -a "$SUMI_HOME/lib" "$STAGE/src/lib" || fail io 1 "không copy được lib vào app"
+
+    local ver; ver="$(jq -r .version "$STAGE/src/manifest.json")"
+    swap_in "$STAGE/src" "$id"
+    local newrec cur
+    newrec="$(jq -cn --arg repo "$E_REPO" --arg ref "$E_REF" --arg sha "$E_SHA" --arg v "$ver" --arg t "$(date -u +%FT%TZ)" \
+        '{repo:$repo, ref:$ref, sha:$sha, version:$v, installed_at:$t, source:"store"}')"
+    cur="$(inst_read)"
+    inst_write "$(jq -c --arg id "$id" --argjson r "$newrec" '.apps[$id] = $r' <<<"$cur")"
+    prune_removed
+    log "store: $mode $id $E_REF ${E_SHA:0:12} ok (backup: ${SWAP_BACKUP:-none})"
+    emit "$(jq -cn --arg id "$id" --arg mode "$mode" --arg v "$ver" --arg ref "$E_REF" --arg sha "$E_SHA" --arg bk "$SWAP_BACKUP" \
+        '{ok:true, mode:$mode, id:$id, version:$v, ref:$ref, sha:$sha, backup:$bk}')" \
+        '"\(.id): \(.mode) xong -> v\(.version) (\(.ref))\(if .backup != "" then "\nbản cũ được giữ ở \(.backup)" else "" end)"'
+}
+
+cmd_remove() {
+    parse_sha_args "$@"
+    valid_id "$ARG_ID" || fail usage 2 "dùng: sumi store remove <id> [--force]"
+    local id="$ARG_ID" dest="$SUMI_HOME/apps/$ARG_ID" rec
+    lock
+    [ -e "$dest" ] || fail not_installed 7 "'$id' chưa cài"
+    is_running "$id" && fail running 3 "'$id' đang chạy. Tắt app trước rồi thử lại."
+    rec="$(inst_read | jq -c --arg id "$id" '.apps[$id] // empty')"
+    if [ -z "$rec" ] && [ "$ARG_FORCE" != 1 ]; then
+        fail dev_installed 7 "'$id' là bản dev, không do store quản lý. Dùng --force nếu thật sự muốn gỡ (có sao lưu)."
+    fi
+    [ -n "$rec" ] || rec='{"source":"dev"}'
+    mkdir -p "$CFG_DIR/backups/removed" || fail io 1 "không tạo được backups/removed"
+    local bk; bk="$(unique_backup "$id")"
+    printf '%s\n' "$rec" >"$dest/.sumi-record.json" 2>/dev/null
+    mv "$dest" "$bk" || fail io 1 "không chuyển được $dest vào backups"
+    inst_write "$(inst_read | jq -c --arg id "$id" 'del(.apps[$id])')"
+    prune_removed
+    log "store: remove $id ok (backup $bk)"
+    emit "$(jq -cn --arg id "$id" --arg bk "$bk" '{ok:true, id:$id, backup:$bk}')" \
+        '"\(.id): đã gỡ. Sao lưu: \(.backup)\nCấu hình của app giữ nguyên trong config.json."'
+}
+
+cmd_removed() {
+    local want="${1:-}" d id st v out='[]' base="$CFG_DIR/backups/removed"
+    if [ -n "$want" ]; then valid_id "$want" || fail usage 2 "id không hợp lệ"; fi
+    if [ -d "$base" ]; then
+        while IFS= read -r d; do
+            [[ "$d" =~ ^([a-z][a-z0-9-]{1,31})-([0-9]{8}-[0-9]{6}(-[0-9]+)?)$ ]] || continue
+            id="${BASH_REMATCH[1]}"; st="${BASH_REMATCH[2]}"
+            [ -z "$want" ] || [ "$id" = "$want" ] || continue
+            v="$(jq -r '.version // empty' "$base/$d/manifest.json" 2>/dev/null)"
+            out="$(jq -c --arg id "$id" --arg st "$st" --arg v "$v" --arg p "$base/$d" '. + [{id:$id, stamp:$st, version:$v, path:$p}]' <<<"$out")"
+        done < <(ls -1 "$base" | sort -r)
+    fi
+    emit "$out" '.[] | "\(.id)\t\(.stamp)\tv\(.version)"'
+}
+
+cmd_restore() {
+    valid_id "${1:-}" || fail usage 2 "dùng: sumi store restore <id> [stamp]"
+    [ "$#" -le 2 ] || fail usage 2 "thừa đối số"
+    local id="$1" want="${2:-}" base="$CFG_DIR/backups/removed" bk rec ver
+    lock
+    if [ -z "$want" ]; then
+        want="$(ls -1 "$base" 2>/dev/null | grep -E "^$id-[0-9]{8}-[0-9]{6}(-[0-9]+)?\$" | sort -r | head -n1)"
+        want="${want#"$id"-}"
+    fi
+    [ -n "$want" ] || fail no_backup 7 "không có bản sao lưu nào của '$id'"
+    [[ "$want" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]] || fail usage 2 "stamp không hợp lệ: $want"
+    bk="$base/$id-$want"
+    [ -d "$bk" ] || fail no_backup 7 "không thấy $bk"
+    is_running "$id" && fail running 3 "'$id' đang chạy. Tắt app trước rồi thử lại."
+
+    mkdir -p "$SUMI_HOME/.staging" || fail io 1 "không tạo được thư mục tạm"
+    STAGE="$(mktemp -d "$SUMI_HOME/.staging/$id.XXXXXX")" || fail io 1 "không tạo được thư mục tạm"
+    cp -a "$bk" "$STAGE/src" || fail io 1 "không copy được bản sao lưu"
+    rec="$(jq -c '.' "$STAGE/src/.sumi-record.json" 2>/dev/null || echo '{"source":"dev"}')"
+    rm -f "$STAGE/src/.sumi-record.json"
+    validate_stage "$STAGE/src" "$id" || fail invalid 5 "bản sao lưu không hợp lệ: $(IFS='; '; echo "${ERRS[*]}")"
+    local req now; req="$(jq -r .requires_lib "$STAGE/src/manifest.json")"; now="$(lib_version)"
+    lib_satisfies "$now" "$req" || fail incompatible 4 "[INCOMPATIBLE] bản sao lưu cần lib $req, hiện có ${now:-không có}"
+    rm -rf "$STAGE/src/lib"; cp -a "$SUMI_HOME/lib" "$STAGE/src/lib" || fail io 1 "không copy được lib"
+
+    swap_in "$STAGE/src" "$id"
+    ver="$(jq -r .version "$SUMI_HOME/apps/$id/manifest.json")"
+    local cur; cur="$(inst_read)"
+    if [ "$(jq -r '.source // "dev"' <<<"$rec")" = "store" ]; then
+        inst_write "$(jq -c --arg id "$id" --argjson r "$rec" '.apps[$id] = $r' <<<"$cur")"
+    else
+        inst_write "$(jq -c --arg id "$id" 'del(.apps[$id])' <<<"$cur")"
+    fi
+    prune_removed
+    log "store: restore $id $want ok"
+    emit "$(jq -cn --arg id "$id" --arg v "$ver" --arg st "$want" --arg bk "$SWAP_BACKUP" '{ok:true, id:$id, version:$v, restored:$st, backup:$bk}')" \
+        '"\(.id): đã khôi phục v\(.version) (\(.restored))\(if .backup != "" then "\nbản đang chạy trước đó được giữ ở \(.backup)" else "" end)"'
+}
+
+usage() {
+    cat <<'EOF'
+dùng: sumi store <lệnh> [--json]
+  registry [--refresh]                  danh sách app trong registry + trạng thái
+  inspect <id>                          kiểm tra bản sẽ cài (không cài gì)
+  install <id> --sha <sha> [--replace]  cài
+  update  <id> --sha <sha>              cập nhật
+  remove  <id> [--force]                gỡ (có sao lưu)
+  removed [<id>]                        liệt kê bản sao lưu
+  restore <id> [stamp]                  khôi phục bản sao lưu
+EOF
+}
+
+main() {
+    local -a args=()
+    local a
+    for a in "$@"; do
+        if [ "$a" = "--json" ]; then JSON=1; else args+=("$a"); fi
+    done
+    set -- "${args[@]+"${args[@]}"}"
+    local cmd="${1:-}"; shift || true
+    case "$cmd" in
+        registry) cmd_registry "$@" ;;
+        inspect)  cmd_inspect "$@" ;;
+        install)  do_install install "$@" ;;
+        update)   do_install update "$@" ;;
+        remove)   cmd_remove "$@" ;;
+        removed)  cmd_removed "$@" ;;
+        restore)  cmd_restore "$@" ;;
+        ""|-h|--help|help) usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+main "$@"

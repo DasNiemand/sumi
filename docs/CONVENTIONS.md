@@ -97,3 +97,39 @@ Validate trước khi rename vào `apps/`:
 - Mỗi tab có bản nháp riêng theo phạm vi; đổi phạm vi thì bỏ bản nháp chưa áp dụng. Dấu `*` trên tab = có thay đổi chưa áp dụng.
 - Mọi thay đổi đều ghi qua `sumi config apply` (xem mục 2), không bao giờ ghi trực tiếp. Config hiện có mà đọc không ra JSON thì hub từ chối ghi.
 - App oneshot (kakunin) đọc config mỗi lần chạy. App daemon (jigen) chỉ nhận giao diện, font, phím mới ở lần mở overlay kế tiếp sau khi reload.
+
+## 9. Store CLI (`sumi store`, file `bin/sumi-store`)
+Hub gọi với `--json`; mỗi lệnh in đúng một đối tượng/mảng JSON. Lỗi: `{"ok":false,"code":"...","message":"..."}`.
+
+| Lệnh | Việc |
+|---|---|
+| `registry [--refresh]` | Tải `index.json` (cache `registry-cache.json`, hạn `hub.checkUpdateHours`, mặc định 6 giờ, timeout 5 s; offline thì dùng cache cũ và `stale:true`). Mỗi app có `state`: `available`, `installed`, `update` (sha registry khác sha đã cài), `dev` (có thư mục app nhưng không do store quản lý). |
+| `inspect <id>` | `ls-remote` kiểm tag, clone tạm, xác minh SHA, validate, kiểm `requires_lib` và gói hệ thống. Không cài gì. Dữ liệu cho màn hình xác nhận: nguồn, version, SHA, `shell_commands`, `requires` (ok/missing/unknown), `lib.compatible`, `conflict`, `warnings`. |
+| `install <id> --sha <sha> [--replace]` | `--sha` phải bằng SHA registry (người dùng đã xác nhận ở `inspect`), lệch thì từ chối `registry_changed`. Clone lại, xác minh lại, validate, vendor lib, rename vào `apps/`. `--replace` để thay bản dev (bản dev được sao lưu). |
+| `update <id> --sha <sha>` | Như install; bản cũ vào `backups/removed/<id>-<stamp>/`. |
+| `remove <id> [--force]` | Chuyển app vào `backups/removed/`. Giữ nguyên `apps.<id>` trong `config.json`. Bản dev cần `--force`. |
+| `removed [<id>]`, `restore <id> [stamp]` | Liệt kê và khôi phục sao lưu (dùng làm rollback sau update). Giữ tối đa 5 bản cho mỗi id. |
+
+- **installed.json**: `{"version":1,"apps":{"<id>":{"repo","ref","sha","version","installed_at","source":"store"}}}`. App không có bản ghi là app dev (`install-dev.sh` xóa bản ghi khi ghi đè app).
+- **Mã thoát**: 0 ok, 1 lỗi chung, 2 sai cú pháp, 3 app đang chạy, 4 `[INCOMPATIBLE]`, 5 không qua kiểm tra, 6 offline, 7 xung đột (đã cài/bản dev/chưa cài).
+- **Luật bổ sung so với mục 6** (do code kiểm tra, không chỉ validator): `run` chỉ được là `qs -p {dir}/shell.qml` hoặc `quickshell -p {dir}/shell.qml` (vì `sumi <app>` exec thẳng chuỗi này); không symlink; không file đặc biệt; tối đa 5 MiB và 300 file; repo có file `*.sh`/`*.py`/có bit thực thi thì hiện cảnh báo ở màn xác nhận; thư mục `lib/` của repo (nếu có) bị thay bằng lib của SUMI.
+- Clone chạy với `GIT_ALLOW_PROTOCOL=https`, không đọc git config người dùng/hệ thống, tắt hooks, không submodule, không tag; `.git` bị xóa sau khi xác minh SHA.
+- Thao tác ghi giữ `sumi.lock`. Từ chối khi app đang chạy (pgrep `-p <dir>/shell.qml`).
+
+### Hub: tab STORE (GĐ3b)
+- Trang APPS bấm `G` mở STORE. Hub **không tự ghi gì**: chỉ gọi `sumi store ... --json` rồi hiển thị; logic thuần nằm ở `lib/SumiStoreLogic.qml`, máy trạng thái ở `hub/shell.qml` (`store*`).
+- Phím: `W/S` chọn app, `Enter` cài/cập nhật (luôn qua `inspect` rồi màn hình xác nhận), `X` gỡ, `B` bản sao lưu (Enter để khôi phục), `R` tải lại registry (`--refresh`), `Esc` quay lại.
+- Màn hình xác nhận hiển thị: nguồn, version, SHA đầy đủ, lib, gói `requires` (thiếu thì đỏ), mọi `shell_commands`, cảnh báo. Lệnh cài dùng đúng SHA của lần `inspect` (`--sha`), không lấy SHA từ nơi nào khác. `[INCOMPATIBLE]` thì không cho xác nhận.
+- Hub chặn trước khi app đang chạy (jigen: cảnh báo tắt app sẽ huỷ hẹn giờ); CLI vẫn chặn thật bằng mã 3.
+- Đang chạy lệnh store thì hub không đóng được (tránh ngắt giữa chừng).
+
+## 10. Tab OPTIONS và `protectedClasses` (GĐ2b-3)
+- **Kiểu option** (`manifest.options[].type`): `bool`, `int`, `float`, `enum`, `intlist` (1..16 số nguyên, mỗi số trong `[min,max]`), `string` (0..64 ký tự, không ký tự điều khiển), `stringlist` (0..32 chuỗi, mỗi chuỗi 1..64 ký tự gồm chữ, số và `_ . * ? -`; dùng cho glob class cửa sổ). `locked: true` thì hub không cho đổi.
+- **Lưu**: `config.apps.<id>.options = { "<key>": giá trị }`, chỉ ghi phần **khác mặc định**; bằng mặc định thì xoá key. Key option lạ (app khác phiên bản) được giữ nguyên khi ghi. Giá trị sai kiểu/ngoài khoảng bị bỏ qua khi đọc và app dùng mặc định.
+- **Hub, tab 4 OPTIONS** (hoặc `O` ở trang APPS): `W/S` chọn hàng, `A/D` chỉnh một nấc (bool/enum đổi giá trị; int bước ≈ khoảng/20 làm tròn lũy thừa 10; float bước ≈ khoảng/50, tối thiểu 0.01), `Enter` sửa (bool/enum đổi giá trị, còn lại mở ô nhập: `Enter` lưu nháp, `Esc` huỷ, giá trị sai thì ở lại ô nhập và báo lỗi), `R` về mặc định hàng, `X` về mặc định hết, `Space` apply (cùng luồng validate, backup, ghi atomic như các tab khác). Danh sách app lấy từ `sumi list --json` (trường `options`).
+- **Cảnh báo chéo** (không chặn): `timer.defaultMinutes` không nằm trong `timer.presets` thì viền đỏ ở hàng defaultMinutes (khớp luật của `tools/validate.py`).
+- **`protectedClasses`** (kakunin, `stringlist`, mặc định `["zen*","Minecraft*"]`): danh sách glob class cửa sổ mà `contrib/safe-close.sh` phải hỏi kakunin trước khi đóng. Script đọc `apps.kakunin.options.protectedClasses` bằng `jq` mỗi lần chạy:
+  - chưa đặt / thiếu file / JSON hỏng / sai kiểu → dùng mặc định;
+  - `[]` → không bảo vệ app nào;
+  - mục sai định dạng bị bỏ qua (không bao giờ được diễn giải thành lệnh).
+  - Chốt chặn một dialog: `pgrep -f -- '-p [^ ]*/apps/kakunin/shell\.qml'` (khớp cả `qs -p` lẫn `quickshell -p`).
