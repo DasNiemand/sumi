@@ -48,7 +48,7 @@ cmd_list() {
             id, name, kanji: (.kanji // ""), description: (.description // ""), version, kind,
             running: $r, dir: $dir,
             source: ($inst[.id].source // "dev"), ref: ($inst[.id].ref // ""), sha: ($inst[.id].sha // ""),
-            functions: [.functions[] | {id, label, ipc_name: (.ipc_name // .id)}],
+            functions: [.functions[] | {id, label, ipc_name: (.ipc_name // .id), objects: (.objects // []), defaultObject: (.defaultObject // "")}],
             keybinds: [(.keybinds // [])[] | {action, default: (.default // ""), label: (.label // .action), locked: (.locked // false)}],
             fonts: (.fonts // []),
             options: [(.options // [])[] | {key, type, default, label: (.label // .key), locked: (.locked // false)} + (if has("min") then {min} else {} end) + (if has("max") then {max} else {} end) + (if has("values") then {values} else {} end)]

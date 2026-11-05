@@ -97,8 +97,8 @@ ShellRoot {
 
     // ===== Trang cài đặt: THEME (2b-1), FONT + KEYS (2b-2) =====
     property string page: "apps"            // apps | theme | font | keys
-    readonly property bool inSettings: page === "theme" || page === "font" || page === "keys" || page === "options"
-    readonly property var tabIds: ["theme", "font", "keys", "options"]
+    readonly property bool inSettings: page === "theme" || page === "font" || page === "keys" || page === "options" || page === "objects"
+    readonly property var tabIds: ["theme", "font", "keys", "options", "objects"]
     property int scopeSel: 0
     property string keepScope: "global"     // phạm vi người dùng chọn gần nhất; đổi tab thì dùng lại (trang không có thì lấy mục đầu)
     function appById(id) {
@@ -107,6 +107,7 @@ ShellRoot {
     }
     function hasKeybinds(a) { return a !== null && Array.isArray(a.keybinds) && a.keybinds.length > 0 }
     function hasOptions(a) { return a !== null && Array.isArray(a.options) && a.options.length > 0 }
+    function hasObjects(a) { return a !== null && ce.objectOptsOf(a).length > 0 }
     // THEME: global, hub, các app. FONT: global + các app (hub theo global). KEYS / OPTIONS: chỉ app có keybind / option.
     function scopeListFor(p) {
         const l = []
@@ -115,6 +116,7 @@ ShellRoot {
         for (let i = 0; i < apps.length; i++) {
             if (p === "keys" && !hasKeybinds(apps[i])) continue
             if (p === "options" && !hasOptions(apps[i])) continue
+            if (p === "objects" && !hasObjects(apps[i])) continue
             l.push({ id: apps[i].id, name: String(apps[i].name).toUpperCase() })
         }
         return l
@@ -296,8 +298,9 @@ ShellRoot {
     property bool optEditing: false
     property string optBuf: ""
     property string optMsg: ""
-    readonly property var optList: hasOptions(scopeApp) ? scopeApp.options : []
-    readonly property var optStored: ce.optionsOf(cfg.data, scopeId, optList)
+    // OPTIONS: option khai trong manifest. OBJECTS: danh sách "ảo" sinh từ manifest.functions[] (xem SumiConfigEdit.objectOptsOf).
+    readonly property var optList: page === "objects" ? (hasObjects(scopeApp) ? ce.objectOptsOf(scopeApp) : []) : (hasOptions(scopeApp) ? scopeApp.options : [])
+    readonly property var optStored: page === "objects" ? ce.objectsOf(cfg.data, scopeId, optList) : ce.optionsOf(cfg.data, scopeId, optList)
     readonly property bool optDirty: !ce.sameOptions(optDraft, optStored)
     readonly property var optConf: ce.optConflicts(optList, optDraft)
     readonly property var curOpt: (optList.length > 0 && optSel >= 0 && optSel < optList.length) ? optList[optSel] : null
@@ -372,6 +375,11 @@ ShellRoot {
             for (let i = 0; i < ce.roles.length; i++) if (f[ce.roles[i]] !== null) n++
             return n > 0 ? (n + " SET") : "INHERIT"
         }
+        if (p === "objects") {
+            const ao = appById(id)
+            const n4 = Object.keys(ce.objectsOf(cfg.data, id, ao !== null ? ce.objectOptsOf(ao) : [])).length
+            return n4 > 0 ? (n4 + " CUSTOM") : "DEFAULT"
+        }
         if (p === "options") {
             const a = appById(id)
             const n3 = Object.keys(ce.optionsOf(cfg.data, id, a !== null && Array.isArray(a.options) ? a.options : [])).length
@@ -380,12 +388,12 @@ ShellRoot {
         const n2 = Object.keys(ce.keysOf(cfg.data, id)).length
         return n2 > 0 ? (n2 + " CUSTOM") : "DEFAULT"
     }
-    function tabDirty(id) { return id === "theme" ? dirty : (id === "font" ? fontDirty : (id === "keys" ? keyDirty : optDirty)) }
+    function tabDirty(id) { return id === "theme" ? dirty : (id === "font" ? fontDirty : (id === "keys" ? keyDirty : (id === page ? optDirty : false))) }
     function loadDraft() {
         draft = ce.lookOf(cfg.data, scopeId)
         fontDraft = ce.fontsOf(cfg.data, scopeId)
         keyDraft = ce.keysOf(cfg.data, scopeId)
-        optDraft = ce.optionsOf(cfg.data, scopeId, optList)
+        optDraft = page === "objects" ? ce.objectsOf(cfg.data, scopeId, optList) : ce.optionsOf(cfg.data, scopeId, optList)
         fontSel = 0; keySel = 0; optSel = 0
         pickOpen = false; capturing = false; capMsg = ""
         optEditing = false; optBuf = ""; optMsg = ""
@@ -400,7 +408,7 @@ ShellRoot {
         if (p === "font") ensureFonts()
         loadDraft()
     }
-    function openSettings(p) { enterPage(p, ((p === "keys" || p === "options") && cur !== null) ? cur.id : keepScope) }
+    function openSettings(p) { enterPage(p, ((p === "keys" || p === "options" || p === "objects") && cur !== null) ? cur.id : keepScope) }
     function closeSettings() { page = "apps"; pickOpen = false; capturing = false; optEditing = false }
     function cycleTab(d) {
         const i = tabIds.indexOf(page)
@@ -454,7 +462,7 @@ ShellRoot {
         if (page === "theme") applyTheme()
         else if (page === "font") applyFonts()
         else if (page === "keys") applyKeys()
-        else if (page === "options") applyOptions()
+        else if (page === "options" || page === "objects") applyOptions()
     }
     function applyTheme() {
         if (!dirty) { fail("NO CHANGES"); return }
@@ -475,7 +483,7 @@ ShellRoot {
         if (!optDirty) { fail("NO CHANGES"); return }
         const errs = ce.validateOptions(optDraft, optList, scopeId)
         if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
-        commitConfig(ce.withOptions(cfg.data, scopeId, optDraft, optList))
+        commitConfig(page === "objects" ? ce.withObjects(cfg.data, scopeId, optDraft, optList) : ce.withOptions(cfg.data, scopeId, optDraft, optList))
     }
     function applyKeys() {
         if (!hasScope) { fail("REJECTED", "không có app nào có keybind"); return }
@@ -667,7 +675,7 @@ ShellRoot {
     }
 
     readonly property string footerText: {
-        if (page === "apps") return "W/S APP   A/D FUNCTION   ENTER RUN   T THEME   F FONT   K KEYS   O OPTION   G STORE   ESC CLOSE"
+        if (page === "apps") return "W/S APP   A/D FUNCTION   ENTER RUN   T THEME   F FONT   K KEYS   O OPTION   J OBJECT   G STORE   ESC CLOSE"
         if (page === "store") {
             if (storeBusy) return "WORKING ...   PLEASE WAIT"
             if (storeView === "confirm") return confirmOk ? "ENTER CONFIRM   ESC CANCEL" : "BLOCKED   ESC BACK"
@@ -679,7 +687,7 @@ ShellRoot {
         if (pickOpen) return "TYPE FILTER   UP/DOWN MOVE   ENTER SELECT   TAB " + (pickKind === "ja" ? "JA ONLY" : (pickKind === "mono" ? "MONO ONLY" : "-")) + "   ESC CANCEL"
         if (page === "theme") return "W/S SCOPE  A/D PRESET  -/= TINT  ,/. INK  ENTER APPLY  R INHERIT  TAB NEXT  ESC BACK"
         if (page === "font") return "W/S ROLE  Q/E SCOPE  ENTER PICK  SPACE APPLY  R RESET  X ALL  TAB NEXT  ESC BACK"
-        if (page === "options") return "W/S ROW  A/D CHANGE  ENTER EDIT  Q/E APP  SPACE APPLY  R DEFAULT  X ALL  TAB NEXT  ESC BACK"
+        if (page === "options" || page === "objects") return "W/S ROW  A/D CHANGE  ENTER EDIT  Q/E APP  SPACE APPLY  R DEFAULT  X ALL  TAB NEXT  ESC BACK"
         return "W/S ACTION  Q/E APP  ENTER REBIND  SPACE APPLY  R DEFAULT  X ALL  TAB NEXT  ESC BACK"
     }
 
@@ -740,6 +748,7 @@ ShellRoot {
                     else if (k === Qt.Key_F) { if (!ar) root.openSettings("font"); event.accepted = true }
                     else if (k === Qt.Key_K) { if (!ar) root.openSettings("keys"); event.accepted = true }
                     else if (k === Qt.Key_O) { if (!ar) root.openSettings("options"); event.accepted = true }
+                    else if (k === Qt.Key_J) { if (!ar) root.openSettings("objects"); event.accepted = true }
                     else if (k === Qt.Key_G) { if (!ar) root.openStore(); event.accepted = true }
                     else if (k === Qt.Key_W || k === Qt.Key_Up) { root.move(-1); event.accepted = true }
                     else if (k === Qt.Key_S || k === Qt.Key_Down) { root.move(1); event.accepted = true }
@@ -756,7 +765,7 @@ ShellRoot {
                 if (k === Qt.Key_Escape) { if (!ar) root.closeSettings(); event.accepted = true; return }
                 if (k === Qt.Key_Tab) { if (!ar) root.cycleTab(1); event.accepted = true; return }
                 if (k === Qt.Key_Backtab) { if (!ar) root.cycleTab(-1); event.accepted = true; return }
-                if (k >= Qt.Key_1 && k <= Qt.Key_4) { if (!ar) root.enterPage(root.tabIds[k - Qt.Key_1], root.keepScope); event.accepted = true; return }
+                if (k >= Qt.Key_1 && k <= Qt.Key_5) { if (!ar) root.enterPage(root.tabIds[k - Qt.Key_1], root.keepScope); event.accepted = true; return }
                 if (k === Qt.Key_Q) { if (!ar) root.moveScope(-1); event.accepted = true; return }
                 if (k === Qt.Key_E) { if (!ar) root.moveScope(1); event.accepted = true; return }
                 if (k === Qt.Key_Space) { if (!ar) root.applyCurrent(); event.accepted = true; return }
@@ -783,7 +792,7 @@ ShellRoot {
                     else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.startCapture(); event.accepted = true }
                     else if (k === Qt.Key_R) { if (!ar) root.resetKeyRow(); event.accepted = true }
                     else if (k === Qt.Key_X) { if (!ar) root.resetKeyAll(); event.accepted = true }
-                } else if (root.page === "options") {
+                } else if (root.page === "options" || root.page === "objects") {
                     if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveOptRow(-1); event.accepted = true }
                     else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveOptRow(1); event.accepted = true }
                     else if (k === Qt.Key_A || k === Qt.Key_Left) { root.nudgeOpt(-1); event.accepted = true }
@@ -839,7 +848,7 @@ ShellRoot {
                             required property int index
                             required property string modelData
                             readonly property bool on: modelData === root.page
-                            width: card.px(116); height: card.px(26)
+                            width: card.px(112); height: card.px(26)
                             color: on ? th.ink : "transparent"
                             border.width: 1; border.color: on ? th.ink : th.rule
                             Text {
@@ -1085,7 +1094,7 @@ ShellRoot {
                     x: card.m + card.px(16); y: card.px(96); width: card.px(310)
                     visible: !root.hasScope
                     wrapMode: Text.WordWrap
-                    text: root.page === "options" ? "Chưa có app nào khai báo option." : "Chưa có app nào khai báo keybind."
+                    text: root.page === "options" ? "Chưa có app nào khai báo option." : (root.page === "objects" ? "Chưa có app nào cho chọn object." : "Chưa có app nào khai báo keybind.")
                     color: th.soft
                     font.family: root.fontLabel; font.pixelSize: card.fs(16)
                 }
@@ -1590,7 +1599,7 @@ ShellRoot {
                 // ---------- pane OPTIONS ----------
                 Item {
                     id: orp
-                    visible: root.page === "options" && root.hasScope
+                    visible: (root.page === "options" || root.page === "objects") && root.hasScope
                     x: card.m + card.px(340) + card.px(30)
                     y: card.px(76)
                     width: card.width - x - card.m
@@ -1599,13 +1608,13 @@ ShellRoot {
                     Rectangle { width: parent.width; height: 1; color: th.ink }
                     Text {
                         y: card.px(8)
-                        text: "OPTIONS / " + root.scopeName
+                        text: (root.page === "objects" ? "OBJECTS / " : "OPTIONS / ") + root.scopeName
                         color: th.ink
                         font.family: root.fontTitle; font.pixelSize: card.fs(24); font.bold: true
                     }
                     Text {
                         anchors.right: parent.right; y: card.px(14)
-                        text: root.optDirty ? "DRAFT" : (root.scopeTag("options", root.scopeId) === "DEFAULT" ? "DEFAULT" : "SAVED")
+                        text: root.optDirty ? "DRAFT" : (root.scopeTag(root.page, root.scopeId) === "DEFAULT" ? "DEFAULT" : "SAVED")
                         color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
                     }

@@ -18,9 +18,9 @@ const eq = (a, b, m) => { n++; if (JSON.stringify(a) !== JSON.stringify(b)) { co
 const QT = { Key_Escape: 1, Key_Return: 2, Key_Enter: 3, Key_Backspace: 4, ControlModifier: 16, AltModifier: 8, MetaModifier: 4096 };
 const fnNames = ['setOpt', 'moveOptRow', 'nudgeOpt', 'enterOpt', 'optEditKey', 'resetOptRow', 'resetOptAll', 'applyOptions', 'optShown'];
 const mk = (cfgData) => {
-  const R = { ce, Qt: QT, optDraft: {}, optSel: 0, optEditing: false, optBuf: '', optMsg: '', applyMsg: '', applyErr: '', applyOk: false, hasScope: true, scopeId: 'jigen', optList: JO,
+  const R = { ce, Qt: QT, page: 'options', optDraft: {}, optSel: 0, optEditing: false, optBuf: '', optMsg: '', applyMsg: '', applyErr: '', applyOk: false, hasScope: true, scopeId: 'jigen', optList: JO,
     cfg: { data: cfgData || { version: 1, global: {}, apps: {} } }, committed: null, failed: [] };
-  Object.defineProperty(R, 'optStored', { get() { return ce.optionsOf(R.cfg.data, R.scopeId, R.optList); } });
+  Object.defineProperty(R, 'optStored', { get() { return R.page === 'objects' ? ce.objectsOf(R.cfg.data, R.scopeId, R.optList) : ce.optionsOf(R.cfg.data, R.scopeId, R.optList); } });
   Object.defineProperty(R, 'optDirty', { get() { return !ce.sameOptions(R.optDraft, R.optStored); } });
   Object.defineProperty(R, 'curOpt', { get() { return R.optList.length > 0 && R.optSel >= 0 && R.optSel < R.optList.length ? R.optList[R.optSel] : null; } });
   R.fail = (m, e) => { R.failed.push([m, e || '']); };
@@ -80,5 +80,24 @@ R.optDraft = ce.optionsOf(R.cfg.data, 'jigen', JO); eq(R.optDirty, false, 'nạp
 // apply giữ key khác trong config
 R.applyOptions(); eq(R.committed.apps.jigen.options, { 'timer.defaultMinutes': 55 }, 'apply sửa đúng giá trị');
 
+
+// ---- trang OBJECTS dùng chung máy trạng thái ----
+{
+  const jm = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+  const OO = ce.objectOptsOf(jm);
+  const R2 = mk({ version: 1, global: {}, apps: { jigen: { objects: { shutdown: { grid: 50 } } } } });
+  R2.optList = OO; R2.page = 'objects';
+  R2.optDraft = ce.objectsOf(R2.cfg.data, 'jigen', OO);
+  R2.optSel = 0; R2.enterOpt(); eq(R2.optDraft, { 'shutdown.id': 'torus' }, 'Enter trên hàng enum đổi object (globe -> torus)');
+  R2.nudgeOpt(1); eq(R2.optDraft['shutdown.id'], 'hourglass', 'D tiếp'); R2.nudgeOpt(1); eq('shutdown.id' in R2.optDraft, false, 'vòng về mặc định thì xoá khỏi draft');
+  R2.optSel = 1; R2.nudgeOpt(1); R2.nudgeOpt(1); eq(R2.optDraft['shutdown.speed'], 1.2, 'speed +0.1 mỗi nấc');
+  R2.optSel = 2; R2.enterOpt(); eq(R2.optDraft['shutdown.interactive'], false, 'bool tắt');
+  // apply gọi withObjects (giữ grid), không gọi withOptions
+  const src = grabH('applyOptions');
+  const ap = new Function('R', `with (R) {\n${src}\nreturn applyOptions;\n}`)(R2);
+  ap();
+  eq(R2.committed.apps.jigen.objects.shutdown, { grid: 50, speed: 1.2, interactive: false }, 'apply ghi objects và giữ grid');
+  eq(R2.committed.apps.jigen.options, undefined, 'apply trang objects không ghi options');
+}
 console.log(f === 0 ? `TAT CA OK (${n} kiem tra, options-ui)` : `${f}/${n} LOI`);
 process.exit(f ? 1 : 0);

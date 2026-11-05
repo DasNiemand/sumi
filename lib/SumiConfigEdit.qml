@@ -489,4 +489,57 @@ QtObject {
         }
         return res
     }
+
+    // ======================= 2b-4: OBJECT theo function =======================
+    // Lưu: config.apps.<id>.objects[<function>] = { id, speed, interactive } (grid, nếu có, giữ nguyên: hub không sửa).
+    // Hub dùng lại giao diện OPTIONS với danh sách option "ảo" sinh từ manifest.functions[]: khoá "<function>.<field>".
+    function objectOptsOf(app) {
+        const l = []
+        const fns = (app !== null && app !== undefined && Array.isArray(app.functions)) ? app.functions : []
+        for (let i = 0; i < fns.length; i++) {
+            const f = fns[i]
+            const objs = Array.isArray(f.objects) ? f.objects : []
+            if (objs.length === 0 || typeof f.id !== "string") continue
+            const lab = String(f.label || f.id).toUpperCase().slice(0, 18)
+            if (objs.length >= 2) l.push({ key: f.id + ".id", type: "enum", values: objs, default: objs.indexOf(f.defaultObject) >= 0 ? f.defaultObject : objs[0], label: lab + " OBJECT", locked: false })
+            l.push({ key: f.id + ".speed", type: "float", default: 1, min: 0, max: 5, label: lab + " SPEED", locked: false })
+            l.push({ key: f.id + ".interactive", type: "bool", default: true, label: lab + " DRAG", locked: false })
+        }
+        return l
+    }
+    function splitObjKey(key) { const i = key.lastIndexOf("."); return i > 0 ? [key.slice(0, i), key.slice(i + 1)] : null }
+    function objectsOf(data, app, optList) {
+        const d = isObj(data) ? data : ({})
+        const src = (isObj(d.apps) && isObj(d.apps[app]) && isObj(d.apps[app].objects)) ? d.apps[app].objects : ({})
+        const out = ({})
+        for (let i = 0; i < optList.length; i++) {
+            const kk = splitObjKey(optList[i].key)
+            if (kk === null || !isObj(src[kk[0]])) continue
+            const v = src[kk[0]][kk[1]]
+            if (v !== undefined && optOk(optList[i], v) && !optSame(v, optList[i].default)) out[optList[i].key] = v
+        }
+        return out
+    }
+    function withObjects(data, app, draft, optList) {
+        const out = isObj(data) ? clone(data) : ({})
+        out.version = 1
+        if (!isObj(out.global)) out.global = ({})
+        if (!isObj(out.apps)) out.apps = ({})
+        if (!isObj(out.apps[app])) out.apps[app] = ({})
+        const tgt = out.apps[app]
+        const objs = isObj(tgt.objects) ? tgt.objects : ({})
+        for (let i = 0; i < optList.length; i++) {
+            const opt = optList[i]
+            const kk = splitObjKey(opt.key)
+            if (kk === null || opt.locked === true) continue
+            const v = draft[opt.key]
+            if (!isObj(objs[kk[0]])) objs[kk[0]] = ({})
+            if (v !== undefined && optOk(opt, v) && !optSame(v, opt.default)) objs[kk[0]][kk[1]] = v
+            else delete objs[kk[0]][kk[1]]
+        }
+        for (var fnk in objs) if (!isObj(objs[fnk]) || Object.keys(objs[fnk]).length === 0) delete objs[fnk]
+        if (Object.keys(objs).length === 0) delete tgt.objects; else tgt.objects = objs
+        tidyApp(out, app)
+        return out
+    }
 }

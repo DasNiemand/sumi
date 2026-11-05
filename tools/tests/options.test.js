@@ -75,6 +75,28 @@ eq([ce.optNudge(B, false, 1), ce.optNudge(B, true, -1), ce.optNudge(E, 'a', 1), 
 eq(ce.optNudge(O('timer.presets'), [5], 1), [5], 'intlist không nudge');
 eq([ce.optInputOk(O('crtBootMs'), '7'), ce.optInputOk(O('crtBootMs'), 'a'), ce.optInputOk(O('dither.noise'), '.'), ce.optInputOk(O('timer.presets'), ','), ce.optInputOk(SL, '*'), ce.optInputOk(SL, ';'), ce.optInputOk(S, '$'), ce.optInputOk(S, '\n'), ce.optInputOk(S, 'ab')], [true, false, true, true, true, false, true, false, false], 'ký tự nhập');
 eq(ce.isTextOpt(B) || ce.isTextOpt(E), false, 'bool/enum không phải text'); eq(ce.isTextOpt(SL) && ce.isTextOpt(O('crtBootMs')), true, 'text opts');
+
+// ---- OBJECT theo function (2b-4) ----
+const JM = man('jigen');
+const OO = ce.objectOptsOf(JM);
+eq(OO.map(o => o.key), ['shutdown.id', 'shutdown.speed', 'shutdown.interactive', 'reboot.id', 'reboot.speed', 'reboot.interactive', 'timer.id', 'timer.speed', 'timer.interactive'], 'objectOptsOf sinh 3 hàng cho mỗi function');
+eq([OO[0].default, OO[3].default, OO[6].default, OO[0].values], ['globe', 'torus', 'hourglass', ['globe', 'torus', 'hourglass']], 'mặc định theo defaultObject');
+eq([OO[1].label, OO[8].label], ['SHUTDOWN SPEED', 'TIMER DRAG'], 'nhãn');
+eq(ce.objectOptsOf({ functions: [{ id: 'a', label: 'A', objects: [] }, { id: 'b', label: 'B', objects: ['x'], defaultObject: 'x' }] }).map(o => o.key), ['b.speed', 'b.interactive'], 'chỉ 1 object thì không có hàng chọn id; function không object bị bỏ');
+eq([ce.objectOptsOf(null), ce.objectOptsOf({}), ce.objectOptsOf(KO && { functions: [{ id: 'confirm', label: 'C', objects: [] }] })], [[], [], []], 'app không có object');
+const od0 = { version: 1, global: {}, apps: { jigen: { theme: 'ink', objects: { shutdown: { id: 'torus', grid: 50, speed: 1 }, reboot: { speed: 2.5 }, ghost: { id: 'x' } } } } };
+eq(ce.objectsOf(od0, 'jigen', OO), { 'shutdown.id': 'torus', 'reboot.speed': 2.5 }, 'objectsOf: bỏ grid/lạ/giá trị bằng mặc định');
+eq(ce.objectsOf(null, 'jigen', OO), {}, 'objectsOf null');
+let on = ce.withObjects(od0, 'jigen', { 'shutdown.id': 'hourglass', 'timer.interactive': false }, OO);
+eq(on.apps.jigen.objects, { shutdown: { id: 'hourglass', grid: 50 }, ghost: { id: 'x' }, timer: { interactive: false } }, 'withObjects: giữ grid + function lạ, xoá reboot đã về mặc định');
+eq([on.apps.jigen.theme, JSON.stringify(od0).includes('hourglass')], ['ink', false], 'không đụng key khác / bản gốc');
+on = ce.withObjects({ version: 1, global: {}, apps: { jigen: { objects: { shutdown: { id: 'torus' } } } } }, 'jigen', {}, OO);
+eq(on.apps, undefined, 'về mặc định hết -> dọn objects/app/apps');
+on = ce.withObjects({ version: 1, global: {}, apps: {} }, 'jigen', { 'timer.speed': 0.5, 'shutdown.id': 'globe' }, OO);
+eq(on.apps.jigen.objects, { timer: { speed: 0.5 } }, 'id bằng mặc định không ghi');
+eq(ce.validateOptions({ 'timer.speed': 9 }, OO, 'jigen'), ['giá trị không hợp lệ cho timer.speed'], 'validate speed ngoài khoảng');
+eq(ce.validateOptions({ 'timer.id': 'nope' }, OO, 'jigen'), ['option lạ: timer.id'].map(x => x.replace('option lạ: timer.id', 'giá trị không hợp lệ cho timer.id')), 'validate id lạ');
+eq([ce.optNudge(OO[0], 'globe', 1), ce.optNudge(OO[0], 'hourglass', 1), ce.optNudge(OO[1], 1, 1), ce.optNudge(OO[2], true, 1)], ['torus', 'globe', 1.1, false], 'nudge hàng object');
 // ---- cảnh báo chéo ----
 eq(ce.optConflicts(JO, {}), {}, 'mặc định không cảnh báo');
 eq(ce.optConflicts(JO, { 'timer.presets': [10, 20] }), { 'timer.defaultMinutes': ['30 không nằm trong timer.presets'] }, 'defaultMinutes ngoài presets');

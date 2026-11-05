@@ -3,7 +3,7 @@
   "name": "JIGEN 時限",
   "kanji": "時限",
   "description": "Shutdown, reboot và hẹn giờ tắt máy. Giữ trạng thái khi đang đếm giờ.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "kind": "daemon",
   "requires_lib": ">=1.2 <2.0",
   "config_version": 1,
@@ -16,18 +16,21 @@
     {
       "id": "shutdown",
       "label": "SHUTDOWN",
-      "objects": []
+      "objects": ["globe", "torus", "hourglass"],
+      "defaultObject": "globe"
     },
     {
       "id": "reboot",
       "label": "REBOOT",
-      "objects": []
+      "objects": ["globe", "torus", "hourglass"],
+      "defaultObject": "torus"
     },
     {
       "id": "timer",
       "label": "TIMER",
       "ipc_name": "shutdown30",
-      "objects": []
+      "objects": ["globe", "torus", "hourglass"],
+      "defaultObject": "hourglass"
     }
   ],
   "options": [

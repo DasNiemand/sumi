@@ -133,3 +133,8 @@ Hub gọi với `--json`; mỗi lệnh in đúng một đối tượng/mảng JS
   - `[]` → không bảo vệ app nào;
   - mục sai định dạng bị bỏ qua (không bao giờ được diễn giải thành lệnh).
   - Chốt chặn một dialog: `pgrep -f -- '-p [^ ]*/apps/kakunin/shell\.qml'` (khớp cả `qs -p` lẫn `quickshell -p`).
+
+## 11. Tab OBJECTS (GĐ2b-4)
+- Phím `5` trong settings hoặc `J` ở trang APPS. Danh sách app lấy những app có function khai `objects` (từ `sumi list --json`: `functions[].objects`, `functions[].defaultObject`). Hub dùng lại giao diện và phím của tab OPTIONS với danh sách option "ảo" sinh từ manifest (`SumiConfigEdit.objectOptsOf`): khoá `<function>.id|speed|interactive`.
+- Lưu: `config.apps.<id>.objects.<function> = {id, speed, interactive}`, chỉ phần khác mặc định (mặc định của id là `defaultObject`, `speed` là 1, `interactive` là true); function về mặc định hết thì entry bị xoá; `grid` và function lạ giữ nguyên.
+- Tài liệu object: `docs/OBJECT_API.md`.
