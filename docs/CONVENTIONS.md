@@ -138,3 +138,11 @@ Hub gọi với `--json`; mỗi lệnh in đúng một đối tượng/mảng JS
 - Phím `5` trong settings hoặc `J` ở trang APPS. Danh sách app lấy những app có function khai `objects` (từ `sumi list --json`: `functions[].objects`, `functions[].defaultObject`). Hub dùng lại giao diện và phím của tab OPTIONS với danh sách option "ảo" sinh từ manifest (`SumiConfigEdit.objectOptsOf`): khoá `<function>.id|speed|interactive`.
 - Lưu: `config.apps.<id>.objects.<function> = {id, speed, interactive}`, chỉ phần khác mặc định (mặc định của id là `defaultObject`, `speed` là 1, `interactive` là true); function về mặc định hết thì entry bị xoá; `grid` và function lạ giữ nguyên.
 - Tài liệu object: `docs/OBJECT_API.md`.
+
+## 12. Preview trong hub (GĐ2b-5)
+- Phím `V` (trang APPS và các tab settings) bật/tắt khung 16:9 ở góc dưới trái. Mặc định **tắt** (View có animation, giữ tắt cho nhẹ). Chỉ một preview một lúc; scope `HUB` và trang Store không có preview.
+- Hub nạp `Loader { source: "file://<dir>/View.qml" }` vào sân khấu 1920x1080 rồi thu nhỏ bằng `scale`, nên View (tính kích thước theo `min(w/1920, h/1080)`) trông giống hệt khi chạy thật. `import "lib"` trong View.qml trỏ tới lib đã vendored trong thư mục app (đây là lý do mọi app vendored lib).
+- Hub gán thuộc tính cho View **chỉ khi View có thuộc tính đó** (`typeof item[k] !== "undefined"`), theo thứ tự: `bootMs`, `outroMs`, màu (`bgColor`, `fgColor`, `mutedColor`, `accentColor`, `dangerColor`), font 5 vai trò, `preset`, `tint`, `inkDarken`, `scanOpacity`, `scanlinesEnabled`, `glitchEnabled`, `scaleBoost`, `previewMode`, `closing`, `mode`, `objectCfg`, dữ liệu mẫu (`appName`, `appTitle`, `appWs`, `userName`, `standby`, `managing`), cuối cùng `active: true`. View mới nên dùng đúng các tên này.
+- **Bản nháp được phản ánh ngay**: tab THEME (nháp của scope đang sửa; sửa GLOBAL thì app có ghi đè riêng giữ nguyên theme riêng), FONT (tương tự), OBJECTS (nháp object). Tab khác và trang APPS hiển thị cấu hình đã lưu.
+- `mode` lấy từ `functions[].ipc_name` (hoặc `id`) của function đang xem: trang APPS theo `A/D`, tab OBJECTS theo hàng đang chọn.
+- Hợp đồng cho View: `previewMode: true` nghĩa là không nhận phím, không giữ focus, không Process/ghi file/thoát tiến trình (đã là quy tắc của View thuần); preview không nhận chuột.

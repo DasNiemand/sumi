@@ -5,7 +5,7 @@ import QtQuick
 import QtQuick.Shapes
 import "lib"
 
-// SUMI 墨 - hub (GĐ2a launcher + GĐ2b theme/font/keys/options + GĐ3b store). Liệt kê app đã cài qua `sumi list --json`, chạy app / function.
+// SUMI 墨 - hub (GĐ2a launcher + GĐ2b theme/font/keys/options/objects/preview + GĐ3b store). Liệt kê app đã cài qua `sumi list --json`, chạy app / function.
 // Mở bằng `sumi hub`. Trang APPS: W/S chọn app, A/D chọn function (app daemon), Enter chạy, T/F/K mở cài đặt (theme/font/keys), Esc/Q đóng.
 // Cài đặt có 3 tab (Tab / Shift+Tab / phím 1-3 để đổi), Q/E đổi phạm vi, Space áp dụng, Esc quay lại:
 //   THEME: W/S phạm vi, A/D preset, -/= tint, ,/. độ đậm mực, Enter áp dụng, R kế thừa.
@@ -13,6 +13,8 @@ import "lib"
 //   KEYS : W/S action, Enter rồi bấm phím để gán, R về mặc định hàng, X về mặc định hết. Trùng phím chỉ cảnh báo.
 //   OPTIONS: W/S hàng, A/D chỉnh (bool/enum/số), Enter sửa (bool/enum đổi giá trị; số/danh sách mở ô nhập, Enter lưu nháp, Esc huỷ), R về mặc định hàng, X hết.
 //            Option do manifest khai báo (apps.<id>.options); chỉ ghi phần khác mặc định; Space = apply như các tab khác.
+//   PREVIEW: phím V (trang APPS và settings) bật/tắt khung 16:9 ở góc dưới trái: nạp View.qml của app (previewMode) ở 1920x1080 thu nhỏ,
+//            phản ánh BẢN NHÁP theme/font/object đang sửa. Chỉ một preview một lúc. Hub (scope HUB) và Store không có preview.
 // Trang APPS bấm G mở STORE (registry sumi-index qua `sumi store ... --json`): W/S chọn, Enter cài/cập nhật (qua màn xác nhận),
 //   X gỡ, B xem bản sao lưu để khôi phục, R tải lại registry, Esc quay lại. Mọi thao tác ghi do `sumi store` làm; hub chỉ hiển thị.
 ShellRoot {
@@ -514,6 +516,82 @@ ShellRoot {
     }
 
 
+    // ===== PREVIEW (GĐ2b-5): khung thu nhỏ nạp View.qml của app ở previewMode =====
+    property bool previewOn: false
+    readonly property var pvApp: {
+        if (page === "store") return null
+        if (page === "apps") return cur
+        if (page === "theme" && scopeId === "hub") return null
+        if (scopeApp !== null && scopeId !== "global") return scopeApp
+        return cur !== null ? cur : (apps.length > 0 ? apps[0] : null)
+    }
+    readonly property var pvFns: (pvApp !== null && Array.isArray(pvApp.functions)) ? pvApp.functions : []
+    // function đang xem: trang APPS theo A/D; tab OBJECTS theo hàng đang chọn; còn lại function đầu tiên
+    readonly property var pvFnObj: {
+        if (pvFns.length === 0) return null
+        if (page === "objects" && curOpt !== null) {
+            const kk = ce.splitObjKey(curOpt.key)
+            if (kk !== null) for (let i = 0; i < pvFns.length; i++) if (pvFns[i].id === kk[0]) return pvFns[i]
+        }
+        if (page === "apps" && cur !== null) return pvFns[Math.max(0, Math.min(fnSel, pvFns.length - 1))]
+        return pvFns[0]
+    }
+    readonly property string pvFn: pvFnObj !== null ? pvFnObj.id : ""
+    readonly property string pvMode: pvFnObj !== null ? String(pvFnObj.ipc_name || pvFnObj.id) : ""
+    readonly property var pvLookS: pvApp !== null ? ce.lookOf(cfg.data, pvApp.id) : ({ theme: null, tint: null, inkDarken: null })
+    readonly property var pvInh: pvApp !== null ? ce.inherited(cfg.data, pvApp.id) : ({ theme: "paper", tint: 0.12, inkDarken: 1.5 })
+    readonly property var pvObjectCfg: {
+        if (pvApp === null) return ({})
+        let d = cfg.data
+        if (page === "objects" && scopeId === pvApp.id) d = ce.withObjects(cfg.data, pvApp.id, optDraft, optList)
+        const a = (d !== null && typeof d === "object" && d.apps !== null && typeof d.apps === "object" && d.apps[pvApp.id] !== undefined) ? d.apps[pvApp.id] : null
+        return (a !== null && typeof a === "object" && a.objects !== null && typeof a.objects === "object") ? a.objects : ({})
+    }
+    // Giá trị look hiệu lực cho app đang preview; đang sửa chính scope đó (hoặc global mà app không ghi đè) thì lấy bản nháp.
+    function pvPick(key, eff) {
+        if (page === "theme" && pvApp !== null) {
+            if (scopeId === pvApp.id) return eff
+            if (scopeId === "global") return pvLookS[key] !== null ? pvLookS[key] : eff
+        }
+        return pvLookS[key] !== null ? pvLookS[key] : pvInh[key]
+    }
+    function pvFam(role) {
+        if (pvApp === null) return ce.fontDefaults[role]
+        const own = ce.fontsOf(cfg.data, pvApp.id)[role]
+        let v
+        if (page === "font" && scopeId === pvApp.id) v = fontEff(role)
+        else if (page === "font" && scopeId === "global") v = own !== null ? own : fontEff(role)
+        else v = own !== null ? own : ce.fontsInherited(cfg.data, pvApp.id)[role]
+        return v !== "" ? v : (role === "kanji" ? Qt.application.font.family : ce.fontDefaults[role])
+    }
+    function pvLook(key, def) {
+        const d = cfg.data
+        const a = (d !== null && typeof d === "object" && d.apps !== null && typeof d.apps === "object" && pvApp !== null && d.apps[pvApp.id] !== null && typeof d.apps[pvApp.id] === "object") ? d.apps[pvApp.id] : ({})
+        if (a[key] !== undefined) return a[key]
+        const g = (d !== null && typeof d === "object" && d.global !== null && typeof d.global === "object") ? d.global : ({})
+        return g[key] !== undefined ? g[key] : def
+    }
+    // Thuộc tính gán cho View.qml (chỉ gán những thuộc tính View thật sự có). Thứ tự quan trọng: `active` cuối cùng.
+    readonly property var pvProps: ({
+        bootMs: 1, outroMs: 1,
+        bgColor: String(colors.adapter.surface), fgColor: String(colors.adapter.on_surface),
+        mutedColor: String(colors.adapter.outline), accentColor: String(colors.adapter.primary), dangerColor: "#E63946",
+        fontTitle: pvFam("title"), fontLabel: pvFam("label"), fontData: pvFam("data"), fontNumeral: pvFam("numeral"), fontKanji: pvFam("kanji"),
+        preset: String(pvPick("theme", effTheme)), tint: Number(pvPick("tint", effTint)), inkDarken: Number(pvPick("inkDarken", effInk)),
+        scanOpacity: Number(pvLook("scanlineOpacity", 0.05)), scanlinesEnabled: pvLook("scanlines", true) !== false, glitchEnabled: pvLook("glitch", true) !== false,
+        scaleBoost: 1, previewMode: true, closing: false,
+        mode: pvMode, objectCfg: pvObjectCfg,
+        appName: "ZEN BROWSER", appTitle: "Example window title", appWs: "1", userName: "arzur",
+        standby: false, managing: false, active: true
+    })
+    onPvPropsChanged: pvApply()
+    function pvApply() {
+        const it = pvLoader.item
+        if (it === null) return
+        const p = pvProps
+        for (const k in p) if (typeof it[k] !== "undefined" && it[k] !== p[k]) it[k] = p[k]
+    }
+
     // ===== STORE (GĐ3b): registry, inspect, cài/cập nhật/gỡ/khôi phục qua `sumi store ... --json` =====
     property var storeApps: []
     property int storeSel: 0
@@ -675,7 +753,7 @@ ShellRoot {
     }
 
     readonly property string footerText: {
-        if (page === "apps") return "W/S APP   A/D FUNCTION   ENTER RUN   T THEME   F FONT   K KEYS   O OPTION   J OBJECT   G STORE   ESC CLOSE"
+        if (page === "apps") return "W/S APP  A/D FUNC  ENTER RUN  T THEME  F FONT  K KEYS  O OPTION  J OBJECT  V PREVIEW  G STORE  ESC"
         if (page === "store") {
             if (storeBusy) return "WORKING ...   PLEASE WAIT"
             if (storeView === "confirm") return confirmOk ? "ENTER CONFIRM   ESC CANCEL" : "BLOCKED   ESC BACK"
@@ -732,6 +810,9 @@ ShellRoot {
             width: px(1000)
             height: px(600)
             readonly property real m: px(26)
+            readonly property real pvW: px(340)
+            readonly property real pvH: Math.round(pvW * 9 / 16)
+            readonly property real pvReserve: (root.previewOn && root.page !== "store") ? (pvH + px(34)) : 0
 
             // Chặn phím ~150ms đầu để không ăn nhầm phím vừa bấm để mở hub
             property bool inputReady: false
@@ -750,6 +831,7 @@ ShellRoot {
                     else if (k === Qt.Key_O) { if (!ar) root.openSettings("options"); event.accepted = true }
                     else if (k === Qt.Key_J) { if (!ar) root.openSettings("objects"); event.accepted = true }
                     else if (k === Qt.Key_G) { if (!ar) root.openStore(); event.accepted = true }
+                    else if (k === Qt.Key_V) { if (!ar) root.previewOn = !root.previewOn; event.accepted = true }
                     else if (k === Qt.Key_W || k === Qt.Key_Up) { root.move(-1); event.accepted = true }
                     else if (k === Qt.Key_S || k === Qt.Key_Down) { root.move(1); event.accepted = true }
                     else if (k === Qt.Key_A || k === Qt.Key_Left) { root.moveFn(-1); event.accepted = true }
@@ -765,6 +847,7 @@ ShellRoot {
                 if (k === Qt.Key_Escape) { if (!ar) root.closeSettings(); event.accepted = true; return }
                 if (k === Qt.Key_Tab) { if (!ar) root.cycleTab(1); event.accepted = true; return }
                 if (k === Qt.Key_Backtab) { if (!ar) root.cycleTab(-1); event.accepted = true; return }
+                if (k === Qt.Key_V) { if (!ar) root.previewOn = !root.previewOn; event.accepted = true; return }
                 if (k >= Qt.Key_1 && k <= Qt.Key_5) { if (!ar) root.enterPage(root.tabIds[k - Qt.Key_1], root.keepScope); event.accepted = true; return }
                 if (k === Qt.Key_Q) { if (!ar) root.moveScope(-1); event.accepted = true; return }
                 if (k === Qt.Key_E) { if (!ar) root.moveScope(1); event.accepted = true; return }
@@ -877,7 +960,7 @@ ShellRoot {
                 id: list
                 visible: root.page === "apps"
                 x: card.m; y: card.px(76)
-                width: card.px(340); height: card.height - card.px(76) - card.px(96)
+                width: card.px(340); height: card.height - card.px(76) - card.px(96) - card.pvReserve
                 clip: true
                 interactive: false
                 model: root.apps
@@ -1047,7 +1130,7 @@ ShellRoot {
                 ListView {
                     id: scopeList
                     x: card.m; y: card.px(76)
-                    width: card.px(340); height: card.height - card.px(76) - card.px(96)
+                    width: card.px(340); height: card.height - card.px(76) - card.px(96) - card.pvReserve
                     clip: true
                     interactive: false
                     model: root.scopes
@@ -1971,6 +2054,52 @@ ShellRoot {
                     color: th.ink
                     font.family: root.fontData; font.pixelSize: card.fs(20); font.letterSpacing: 2; font.bold: true
                 }
+            }
+
+            // ---------- PREVIEW (góc dưới trái; V bật/tắt) ----------
+            Item {
+                id: pvFrame
+                visible: root.previewOn && root.page !== "store"
+                x: card.m
+                y: card.px(76) + (card.height - card.px(76) - card.px(96)) - card.pvH
+                width: card.pvW; height: card.pvH
+
+                Text {
+                    anchors.bottom: parent.top; anchors.bottomMargin: card.px(6)
+                    width: parent.width - card.px(70); elide: Text.ElideRight
+                    text: root.pvApp === null ? "NO PREVIEW FOR THIS SCOPE"
+                          : (pvLoader.status === Loader.Error ? "PREVIEW UNAVAILABLE (VIEW.QML)"
+                          : ("PREVIEW   " + String(root.pvApp.name).toUpperCase() + (root.pvFn !== "" ? (" / " + root.pvFn.toUpperCase()) : "")))
+                    color: th.soft
+                    font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                }
+                Text {
+                    anchors.bottom: parent.top; anchors.bottomMargin: card.px(6)
+                    anchors.right: parent.right
+                    text: "V HIDE"
+                    color: th.soft
+                    font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                }
+                Rectangle { anchors.fill: parent; color: "transparent"; border.width: 1; border.color: th.ink; z: 2 }
+                Item {
+                    anchors.fill: parent; anchors.margins: 1
+                    clip: true
+                    // Sân khấu 1920x1080 thu nhỏ: View tính kích thước theo u = min(w/1920, h/1080) nên hình giống hệt khi chạy thật
+                    Item {
+                        id: pvStage
+                        width: 1920; height: 1080
+                        scale: (card.pvW - 2) / 1920
+                        transformOrigin: Item.TopLeft
+                        Loader {
+                            id: pvLoader
+                            anchors.fill: parent
+                            active: root.previewOn && root.page !== "store" && root.pvApp !== null
+                            source: root.pvApp !== null ? encodeURI("file://" + root.pvApp.dir + "/View.qml") : ""
+                            onLoaded: root.pvApply()
+                        }
+                    }
+                }
+                MouseArea { anchors.fill: parent; z: 3 }     // preview chỉ để xem, không nhận chuột
             }
 
             // ---------- chân trang ----------
