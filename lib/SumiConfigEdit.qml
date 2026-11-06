@@ -303,7 +303,7 @@ QtObject {
         case "bool": return typeof v === "boolean"
         case "int": return isNum(v) && Math.floor(v) === v && v >= opt.min && v <= opt.max
         case "float": return isNum(v) && v >= opt.min && v <= opt.max
-        case "enum": return typeof v === "string" && Array.isArray(opt.values) && opt.values.indexOf(v) >= 0
+        case "enum": return (typeof v === "string" || typeof v === "number") && Array.isArray(opt.values) && opt.values.indexOf(v) >= 0
         case "intlist":
             if (!Array.isArray(v) || v.length < 1 || v.length > 16) return false
             for (let i = 0; i < v.length; i++) if (!isNum(v[i]) || Math.floor(v[i]) !== v[i] || v[i] < opt.min || v[i] > opt.max) return false
@@ -540,6 +540,65 @@ QtObject {
         for (var fnk in objs) if (!isObj(objs[fnk]) || Object.keys(objs[fnk]).length === 0) delete objs[fnk]
         if (Object.keys(objs).length === 0) delete tgt.objects; else tgt.objects = objs
         tidyApp(out, app)
+        return out
+    }
+
+    // ======================= 2b-5: OPTION của HUB (config.hub) =======================
+    // Hiện trong tab OPTIONS, scope HUB. Lưu ở config.hub.<key>, chỉ phần khác mặc định; giữ nguyên hub.theme, hub.registryUrl...
+    function hubOptsList() {
+        return [
+            { key: "autoRevert", type: "bool", default: false, label: "AUTO-REVERT", locked: false },
+            { key: "autoRevertSec", type: "enum", values: [10, 15, 30], default: 15, label: "REVERT AFTER (S)", locked: false },
+            { key: "maxBackups", type: "int", default: 20, min: 5, max: 100, label: "MAX BACKUPS", locked: false },
+            { key: "checkUpdateHours", type: "int", default: 6, min: 1, max: 168, label: "UPDATE CHECK (H)", locked: false },
+            { key: "crtBootMs", type: "int", default: 600, min: 0, max: 3000, label: "CRT BOOT MS (0=OFF)", locked: false },
+            { key: "crtOutroMs", type: "int", default: 360, min: 0, max: 3000, label: "CRT OUTRO MS (0=OFF)", locked: false }
+        ]
+    }
+    function hubOptionsOf(data) {
+        const d = isObj(data) ? data : ({})
+        const src = isObj(d.hub) ? d.hub : ({})
+        const out = ({})
+        const l = hubOptsList()
+        for (let i = 0; i < l.length; i++) {
+            const v = src[l[i].key]
+            if (v !== undefined && optOk(l[i], v) && !optSame(v, l[i].default)) out[l[i].key] = v
+        }
+        return out
+    }
+    // Giá trị hiệu lực của mọi option hub: { key: giá trị } (đã lưu và hợp lệ thì dùng, còn lại mặc định).
+    function hubOptsEff(data) {
+        const l = hubOptsList()
+        const st = hubOptionsOf(data)
+        const out = ({})
+        for (let i = 0; i < l.length; i++) out[l[i].key] = st[l[i].key] !== undefined ? st[l[i].key] : l[i].default
+        return out
+    }
+    function withHubOptions(data, draft) {
+        const out = isObj(data) ? clone(data) : ({})
+        out.version = 1
+        if (!isObj(out.global)) out.global = ({})
+        const hub = isObj(out.hub) ? out.hub : ({})
+        const l = hubOptsList()
+        for (let i = 0; i < l.length; i++) {
+            const v = draft[l[i].key]
+            if (v !== undefined && optOk(l[i], v) && !optSame(v, l[i].default)) hub[l[i].key] = v
+            else delete hub[l[i].key]
+        }
+        if (Object.keys(hub).length === 0) delete out.hub; else out.hub = hub
+        return out
+    }
+    // Auto-revert đang bật không? Trả { on, sec } từ config đã lưu (sec luôn thuộc 10/15/30).
+    function autoRevertOf(data) {
+        const h = (isObj(data) && isObj(data.hub)) ? data.hub : ({})
+        const sec = [10, 15, 30].indexOf(h.autoRevertSec) >= 0 ? h.autoRevertSec : 15
+        return { on: h.autoRevert === true, sec: sec }
+    }
+    // Bản config "trước khi apply" dùng để hoàn tác: luôn hợp lệ cho `sumi config apply` (version=1, có global).
+    function revertSnapshot(data) {
+        const out = isObj(data) ? clone(data) : ({})
+        out.version = 1
+        if (!isObj(out.global)) out.global = ({})
         return out
     }
 }

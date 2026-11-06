@@ -20,6 +20,30 @@ QtObject {
         return { ok: false, data: d, msg: m }
     }
 
+    // ----- Thông báo bản mới ở trang APPS (từ `sumi update --check --json` và `sumi store registry --json`) -----
+    function coreNote(text) {
+        const r = parse(text)
+        if (!r.ok || !isObj(r.data) || r.data.available !== true || typeof r.data.latest !== "string") return ""
+        return "v" + r.data.latest
+    }
+    function updatesIn(apps) {
+        let n = 0
+        if (!Array.isArray(apps)) return 0
+        for (let i = 0; i < apps.length; i++) if (isObj(apps[i]) && apps[i].state === "update") n++
+        return n
+    }
+    function appsNote(text) {
+        const r = parse(text)
+        if (!r.ok || !isObj(r.data) || !Array.isArray(r.data.apps)) return 0
+        return updatesIn(r.data.apps)
+    }
+    function noteLine(core, n) {
+        const parts = []
+        if (typeof core === "string" && core !== "") parts.push("SUMI " + core)
+        if (typeof n === "number" && n > 0) parts.push(n + (n === 1 ? " APP" : " APPS"))
+        return parts.length > 0 ? ("UPDATE   " + parts.join("  ·  ")) : ""
+    }
+
     function short(sha) { return typeof sha === "string" ? sha.slice(0, 12) : "" }
 
     // Nhãn trạng thái ở danh sách bên trái.

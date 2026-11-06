@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# sumi-self: cập nhật và gỡ lõi SUMI (gọi qua `sumi update`, `sumi uninstall`, `sumi version`).
+#
+#   version                          in version đã cài
+#   update [--check] [--refresh] [--yes]   tìm tag vX.Y.Z mới nhất của repo sumi; --check chỉ báo (có cache theo hub.checkUpdateHours,
+#                                    --refresh bỏ qua cache; offline thì dùng cache cũ); --yes thì cập nhật (luôn hỏi GitHub thật)
+#   uninstall [--yes] [--purge]      gỡ lõi (không --yes: chỉ in kế hoạch); --purge xoá luôn ~/.config/sumi
+#
+# Cập nhật: git ls-remote tìm tag annotated vX.Y.Z (peeled), clone đúng tag vào thư mục tạm, kiểm HEAD == commit của tag
+# và VERSION == tag, rồi chạy install.sh của bản đó (--update). Không cập nhật khi hub hoặc app đang chạy.
+# Cập nhật app đi qua `sumi store`, không qua đây.
+# Mã thoát: 0 ok | 1 lỗi chung | 2 sai cú pháp/chưa xác nhận | 3 đang chạy | 5 không qua kiểm tra | 6 offline
+# Với --json: đúng MỘT đối tượng JSON ra stdout. Biến test: SUMI_STORE_TEST=1 (cho file://), SUMI_GIT_BASE.
+set -u
+
+SUMI_HOME="${SUMI_HOME:-$HOME/.local/share/sumi}"
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sumi"
+BIN_DIR="${SUMI_BIN_DIR:-$HOME/.local/bin}"
+GIT_BASE="${SUMI_GIT_BASE:-https://github.com}"
+TEST="${SUMI_STORE_TEST:-0}"
+DEFAULT_REPO="github.com/DasNiemand/sumi"
+INSTALL_JSON="$SUMI_HOME/install.json"
+JSON=0
+STAGE=""
+
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>/tmp/sumi.log 2>/dev/null || true; }
+cleanup() { [ -n "$STAGE" ] && rm -rf -- "$STAGE"; return 0; }
+trap cleanup EXIT
+
+fail() {  # fail <code> <exit> <message...>
+    local code="$1" ex="$2"; shift 2
+    log "self: lỗi $code: $*"
+    if [ "$JSON" = 1 ]; then jq -cn --arg c "$code" --arg m "$*" '{ok:false,code:$c,message:$m}'; else echo "sumi: $*" >&2; fi
+    exit "$ex"
+}
+command -v jq >/dev/null 2>&1 || { echo "sumi: thiếu lệnh 'jq'" >&2; exit 1; }
+emit() { if [ "$JSON" = 1 ]; then printf '%s\n' "$1"; else jq -r "$2" <<<"$1"; fi; }
+
+ver_num() { local IFS=.; set -- $1; echo $(( 10#${1:-0} * 1000000 + 10#${2:-0} * 1000 + 10#${3:-0} )); }
+running() { pgrep -f -- "-p $SUMI_HOME/(hub|apps/[^ /]+)/shell\\.qml" >/dev/null 2>&1; }
+
+inst_field() { jq -r --arg k "$1" '.[$k] // empty' "$INSTALL_JSON" 2>/dev/null; }
+
+git_safe() {
+    local protos="https"; [ "$TEST" = 1 ] && protos="https:file"
+    GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL="$protos" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        timeout "${TMO:-60}" git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+}
+
+core_repo() {
+    local r; r="$(inst_field repo)"; [ -n "$r" ] || r="$DEFAULT_REPO"
+    [[ "$r" =~ ^github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || fail repo 1 "repo trong install.json không hợp lệ: $r"
+    printf '%s' "$r"
+}
+
+# Tag annotated vX.Y.Z mới nhất: in "<x.y.z> <sha commit>"; trả 6 nếu offline, 5 nếu không có tag nào.
+LATEST_VER=""; LATEST_SHA=""
+find_latest() {
+    local repo="$1" url out
+    url="$GIT_BASE/${repo#github.com/}.git"
+    out="$(TMO=8 git_safe ls-remote --tags "$url" 'refs/tags/v*^{}' 2>/dev/null)" || fail offline 6 "không kết nối được tới $repo (offline?)"
+    out="$(awk '$2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+\^\{\}$/ { t=$2; sub(/^refs\/tags\/v/, "", t); sub(/\^\{\}$/, "", t); print t, $1 }' <<<"$out" | sort -V | tail -n1)"
+    [ -n "$out" ] || fail no_release 5 "repo $repo chưa có tag annotated vX.Y.Z nào"
+    LATEST_VER="${out%% *}"; LATEST_SHA="${out##* }"
+}
+
+# Cache cho `update --check` (hub gọi mỗi lần mở): hạn = hub.checkUpdateHours (mặc định 6, 1..168). Offline thì dùng cache cũ và stale=true.
+STALE=false
+find_latest_cached() {  # find_latest_cached <repo> <refresh 0|1>
+    local repo="$1" refresh="$2" cache="$CFG_DIR/core-update-cache.json" ttl now fetched ver sha tmp
+    ttl="$(jq -r '.hub.checkUpdateHours // empty' "$CFG_DIR/config.json" 2>/dev/null)"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=6
+    [ "$ttl" -lt 1 ] && ttl=1; [ "$ttl" -gt 168 ] && ttl=168
+    now="$(date +%s)"
+    fetched="$(jq -r --arg r "$repo" 'select(.repo == $r) | .fetched_at // 0' "$cache" 2>/dev/null)"
+    [[ "$fetched" =~ ^[0-9]+$ ]] || fetched=0
+    ver="$(jq -r --arg r "$repo" 'select(.repo == $r) | .latest // empty' "$cache" 2>/dev/null)"
+    sha="$(jq -r --arg r "$repo" 'select(.repo == $r) | .sha // empty' "$cache" 2>/dev/null)"
+    local have=0
+    [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$sha" =~ ^[0-9a-f]{40}$ ]] && have=1
+    if [ "$refresh" != 1 ] && [ "$have" = 1 ] && [ "$fetched" -gt 0 ] && [ $((now - fetched)) -lt $((ttl * 3600)) ]; then
+        LATEST_VER="$ver"; LATEST_SHA="$sha"; return 0
+    fi
+    local url out
+    url="$GIT_BASE/${repo#github.com/}.git"
+    if ! out="$(TMO=8 git_safe ls-remote --tags "$url" 'refs/tags/v*^{}' 2>/dev/null)"; then
+        if [ "$have" = 1 ]; then LATEST_VER="$ver"; LATEST_SHA="$sha"; STALE=true; return 0; fi
+        fail offline 6 "không kết nối được tới $repo (offline?)"
+    fi
+    out="$(awk '$2 ~ /^refs\/tags\/v[0-9]+\.[0-9]+\.[0-9]+\^\{\}$/ { t=$2; sub(/^refs\/tags\/v/, "", t); sub(/\^\{\}$/, "", t); print t, $1 }' <<<"$out" | sort -V | tail -n1)"
+    [ -n "$out" ] || fail no_release 5 "repo $repo chưa có tag annotated vX.Y.Z nào"
+    LATEST_VER="${out%% *}"; LATEST_SHA="${out##* }"
+    mkdir -p "$CFG_DIR"
+    tmp="$(mktemp "$CFG_DIR/core-update-cache.json.XXXXXX")" && {
+        jq -cn --arg r "$repo" --argjson t "$now" --arg v "$LATEST_VER" --arg s "$LATEST_SHA" '{repo:$r, fetched_at:$t, latest:$v, sha:$s}' >"$tmp" \
+            && mv -f "$tmp" "$cache" || rm -f "$tmp"
+    }
+}
+
+cmd_version() {
+    local v; v="$(inst_field version)"
+    [ -n "$v" ] || fail not_installed 1 "chưa có $INSTALL_JSON (chưa cài bằng install.sh?)"
+    emit "$(jq -c '{ok:true} + .' "$INSTALL_JSON")" '"SUMI \(.version)  (lib \(.lib // "?"))  \(.repo // "")  \(.sha // "" | .[0:12])  cài \(.installed_at // "")"'
+}
+
+cmd_update() {
+    local check=0 yes=0 refresh=0 a
+    for a in "$@"; do
+        case "$a" in --check) check=1 ;; --yes|-y) yes=1 ;; --refresh) refresh=1 ;; *) fail usage 2 "tuỳ chọn không biết: $a" ;; esac
+    done
+    local cur; cur="$(inst_field version)"
+    [ -n "$cur" ] || fail not_installed 1 "chưa có $INSTALL_JSON (chưa cài bằng install.sh?)"
+    [ "$cur" != dev ] || fail dev_install 1 "đây là bản cài dev (install-dev.sh). Cập nhật bằng cách chạy lại install-dev.sh."
+    [[ "$cur" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail bad_install 1 "version đã cài không hợp lệ: $cur"
+    local repo; repo="$(core_repo)"
+    STALE=false
+    if [ "$check" = 1 ] && [ "$yes" != 1 ]; then find_latest_cached "$repo" "$refresh"; else find_latest "$repo"; fi
+    local avail=false
+    [ "$(ver_num "$LATEST_VER")" -gt "$(ver_num "$cur")" ] && avail=true
+    local info
+    info="$(jq -cn --arg c "$cur" --arg l "$LATEST_VER" --arg s "$LATEST_SHA" --arg r "$repo" --argjson a "$avail" \
+        --argjson st "$STALE" '{ok:true, installed:$c, latest:$l, tag:("v"+$l), sha:$s, repo:$r, available:$a, stale:$st}')"
+    if [ "$check" = 1 ] || [ "$avail" != true ]; then
+        emit "$info" 'if .available then "có bản mới: v\(.latest) (đang dùng \(.installed)). Cập nhật: sumi update --yes" else "đang ở bản mới nhất (\(.installed))" end'
+        return 0
+    fi
+    if [ "$yes" != 1 ]; then
+        emit "$info" '"có bản mới: v\(.latest) (đang dùng \(.installed))\nNguồn: https://\(.repo)\nTag:   \(.tag)\nSHA:   \(.sha)\nChạy lại với --yes để cập nhật (hub và app phải đang tắt)."'
+        exit 2
+    fi
+    running && fail running 3 "hub hoặc app SUMI đang chạy. Tắt chúng rồi thử lại."
+
+    local url tag="v$LATEST_VER" head
+    url="$GIT_BASE/${repo#github.com/}.git"
+    mkdir -p "$SUMI_HOME/.staging" || fail io 1 "không tạo được thư mục tạm"
+    STAGE="$(mktemp -d "$SUMI_HOME/.staging/core.XXXXXX")" || fail io 1 "không tạo được thư mục tạm"
+    git_safe clone --quiet --depth 1 --branch "$tag" --no-tags --single-branch "$url" "$STAGE/src" >/dev/null 2>&1 \
+        || fail clone 6 "clone $repo ($tag) thất bại"
+    head="$(git -C "$STAGE/src" rev-parse HEAD 2>/dev/null)"
+    [ "$head" = "$LATEST_SHA" ] || fail sha_mismatch 5 "SHA bản clone (${head:0:12}) khác SHA của tag (${LATEST_SHA:0:12}). Đã huỷ."
+    [ "$(tr -d '[:space:]' <"$STAGE/src/VERSION" 2>/dev/null)" = "$LATEST_VER" ] \
+        || fail version_mismatch 5 "tag $tag nhưng file VERSION ghi '$(tr -d '[:space:]' <"$STAGE/src/VERSION" 2>/dev/null)'. Đã huỷ."
+    [ -f "$STAGE/src/install.sh" ] && [ -f "$STAGE/src/bin/sumi" ] && [ -f "$STAGE/src/hub/shell.qml" ] \
+        || fail layout 5 "bản $tag thiếu install.sh / bin/sumi / hub/shell.qml"
+    [ "$JSON" = 1 ] || echo "cập nhật SUMI $cur -> $LATEST_VER ($repo $tag ${LATEST_SHA:0:12})"
+    local outp
+    if ! outp="$(bash "$STAGE/src/install.sh" --update --sha "$LATEST_SHA" --repo "$repo" 2>&1)"; then
+        log "self: install.sh của $tag lỗi: $outp"
+        fail install 1 "install.sh của $tag thất bại: $(tail -n 3 <<<"$outp" | tr '\n' ' ')"
+    fi
+    [ "$JSON" = 1 ] || printf '%s\n' "$outp"
+    log "self: update $cur -> $LATEST_VER ok"
+    emit "$(jq -cn --arg c "$cur" --arg l "$LATEST_VER" --arg s "$LATEST_SHA" '{ok:true, updated:true, from:$c, to:$l, sha:$s}')" '"xong: \(.from) -> \(.to)"'
+}
+
+cmd_uninstall() {
+    local yes=0 purge=0 a
+    for a in "$@"; do
+        case "$a" in --yes|-y) yes=1 ;; --purge) purge=1 ;; *) fail usage 2 "tuỳ chọn không biết: $a" ;; esac
+    done
+    # Chống xoá nhầm: chỉ xoá thư mục tên .../sumi
+    [[ "$SUMI_HOME" == */sumi && "$SUMI_HOME" != "/sumi" ]] || fail unsafe 1 "SUMI_HOME ($SUMI_HOME) không kết thúc bằng /sumi, từ chối xoá"
+    [[ "$CFG_DIR" == */sumi && "$CFG_DIR" != "/sumi" ]] || fail unsafe 1 "thư mục config ($CFG_DIR) không kết thúc bằng /sumi, từ chối xoá"
+    local bins=() b d apps=()
+    for b in sumi sumi-store sumi-self sumi-safe-close; do [ -e "$BIN_DIR/$b" ] && bins+=("$BIN_DIR/$b"); done
+    for d in "$SUMI_HOME"/apps/*/; do [ -f "${d}manifest.json" ] && apps+=("$(basename "$d")"); done
+    local plan
+    plan="$(jq -cn --arg home "$SUMI_HOME" --arg cfg "$CFG_DIR" --argjson purge "$([ "$purge" = 1 ] && echo true || echo false)" \
+        --argjson bins "$(if [ "${#bins[@]}" -eq 0 ]; then echo '[]'; else printf '%s\n' "${bins[@]}" | jq -R . | jq -sc .; fi)" \
+        --argjson apps "$(if [ "${#apps[@]}" -eq 0 ]; then echo '[]'; else printf '%s\n' "${apps[@]}" | jq -R . | jq -sc .; fi)" \
+        '{ok:true, remove:{home:$home, bins:$bins, apps:$apps, config:(if $purge then $cfg else null end)}, keep_config:(if $purge then null else $cfg end)}')"
+    if [ "$yes" != 1 ]; then
+        emit "$plan" '"Sẽ gỡ:\n  \(.remove.home)  (hub, lib, \(.remove.apps | length) app\(if (.remove.apps | length) > 0 then ": " + (.remove.apps | join(", ")) else "" end))\n\(.remove.bins | map("  " + .) | join("\n"))\n\(if .remove.config then "  " + .remove.config + "  (CẤU HÌNH + BACKUP, do --purge)" else "Giữ nguyên: " + .keep_config + "  (config, backup; thêm --purge để xoá)" end)\nChạy lại với --yes để thực hiện (hub và app phải đang tắt)."'
+        exit 2
+    fi
+    running && fail running 3 "hub hoặc app SUMI đang chạy. Tắt chúng rồi thử lại."
+    log "self: uninstall (purge=$purge)"
+    rm -rf -- "$SUMI_HOME"
+    [ "$purge" = 1 ] && rm -rf -- "$CFG_DIR"
+    # Xoá lệnh sau cùng (bash đã đọc xong hàm này; xoá chính file đang chạy vẫn an toàn trên Linux)
+    [ "${#bins[@]}" -eq 0 ] || rm -f -- "${bins[@]}"
+    emit "$(jq -c '. + {removed:true}' <<<"$plan")" '"đã gỡ SUMI.\nCòn lại do bạn tự quản lý (SUMI không sửa các file này): user template của Noctalia ghi colors.json, bind Hyprland trỏ vào sumi-safe-close, và bản cấu hình quickshell cũ (confirm, clockwidget) nếu còn."'
+}
+
+usage() {
+    cat <<'EOF'
+dùng: sumi version | sumi update [--check] [--yes] | sumi uninstall [--yes] [--purge]   (thêm --json cho máy đọc)
+EOF
+}
+
+main() {
+    local -a args=(); local a
+    for a in "$@"; do if [ "$a" = "--json" ]; then JSON=1; else args+=("$a"); fi; done
+    set -- "${args[@]+"${args[@]}"}"
+    local cmd="${1:-}"; shift || true
+    case "$cmd" in
+        version) cmd_version ;;
+        update) cmd_update "$@" ;;
+        uninstall) cmd_uninstall "$@" ;;
+        ""|-h|--help|help) usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+main "$@"

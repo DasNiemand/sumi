@@ -15,6 +15,11 @@ import "lib"
 //            Option do manifest khai báo (apps.<id>.options); chỉ ghi phần khác mặc định; Space = apply như các tab khác.
 //   PREVIEW: phím V (trang APPS và settings) bật/tắt khung 16:9 ở góc dưới trái: nạp View.qml của app (previewMode) ở 1920x1080 thu nhỏ,
 //            phản ánh BẢN NHÁP theme/font/object đang sửa. Chỉ một preview một lúc. Hub (scope HUB) và Store không có preview.
+//   AUTO-REVERT: OPTIONS > scope HUB > AUTO-REVERT (tắt mặc định). Bật thì sau mỗi Apply có thanh đếm ngược 10/15/30 s: Enter giữ, Esc hoặc hết giờ
+//            hoặc đóng hub = hoàn tác (áp lại config trước đó qua `sumi config apply`). Các phím khác bị chặn trong lúc đếm.
+//   CRT:     bật máy (đường kẻ -> mở ra) và tắt máy (thu lại) cho cửa sổ hub, scanline + thanh quét + glitch ở tiêu đề.
+//            OPTIONS > HUB: CRT BOOT MS / CRT OUTRO MS (0 = tắt hiệu ứng tương ứng); scanlines, scanlineOpacity, glitch lấy từ look (global).
+//   NOTICE:  mở hub thì chạy nền `sumi update --check` và `sumi store registry` (có cache); có bản mới thì hiện ở thanh trên trang APPS.
 // Trang APPS bấm G mở STORE (registry sumi-index qua `sumi store ... --json`): W/S chọn, Enter cài/cập nhật (qua màn xác nhận),
 //   X gỡ, B xem bản sao lưu để khôi phục, R tải lại registry, Esc quay lại. Mọi thao tác ghi do `sumi store` làm; hub chỉ hiển thị.
 ShellRoot {
@@ -95,7 +100,12 @@ ShellRoot {
         Quickshell.execDetached(cmd)
         quitTimer.restart()           // đóng hub để app nhận focus bàn phím
     }
-    function dismiss() { if (storeBusy) return; Qt.quit() }      // đang cài/gỡ thì không đóng hub giữa chừng
+    // Đang cài/gỡ thì không đóng hub giữa chừng. Đang đếm ngược auto-revert mà đóng hub = chưa xác nhận -> hoàn tác.
+    function dismiss() {
+        if (storeBusy) return
+        if (revertActive) { revertActive = false; Quickshell.execDetached([sumiBin, "config", "apply", revertPrev]) }
+        finish()
+    }
 
     // ===== Trang cài đặt: THEME (2b-1), FONT + KEYS (2b-2) =====
     property string page: "apps"            // apps | theme | font | keys
@@ -115,6 +125,7 @@ ShellRoot {
         const l = []
         if (p === "theme") { l.push({ id: "global", name: "GLOBAL" }); l.push({ id: "hub", name: "HUB" }) }
         else if (p === "font") l.push({ id: "global", name: "GLOBAL" })
+        else if (p === "options") l.push({ id: "hub", name: "HUB" })
         for (let i = 0; i < apps.length; i++) {
             if (p === "keys" && !hasKeybinds(apps[i])) continue
             if (p === "options" && !hasOptions(apps[i])) continue
@@ -301,8 +312,8 @@ ShellRoot {
     property string optBuf: ""
     property string optMsg: ""
     // OPTIONS: option khai trong manifest. OBJECTS: danh sách "ảo" sinh từ manifest.functions[] (xem SumiConfigEdit.objectOptsOf).
-    readonly property var optList: page === "objects" ? (hasObjects(scopeApp) ? ce.objectOptsOf(scopeApp) : []) : (hasOptions(scopeApp) ? scopeApp.options : [])
-    readonly property var optStored: page === "objects" ? ce.objectsOf(cfg.data, scopeId, optList) : ce.optionsOf(cfg.data, scopeId, optList)
+    readonly property var optList: page === "objects" ? (hasObjects(scopeApp) ? ce.objectOptsOf(scopeApp) : []) : ((page === "options" && scopeId === "hub") ? ce.hubOptsList() : (hasOptions(scopeApp) ? scopeApp.options : []))
+    readonly property var optStored: page === "objects" ? ce.objectsOf(cfg.data, scopeId, optList) : ((page === "options" && scopeId === "hub") ? ce.hubOptionsOf(cfg.data) : ce.optionsOf(cfg.data, scopeId, optList))
     readonly property bool optDirty: !ce.sameOptions(optDraft, optStored)
     readonly property var optConf: ce.optConflicts(optList, optDraft)
     readonly property var curOpt: (optList.length > 0 && optSel >= 0 && optSel < optList.length) ? optList[optSel] : null
@@ -382,6 +393,7 @@ ShellRoot {
             const n4 = Object.keys(ce.objectsOf(cfg.data, id, ao !== null ? ce.objectOptsOf(ao) : [])).length
             return n4 > 0 ? (n4 + " CUSTOM") : "DEFAULT"
         }
+        if (p === "options" && id === "hub") return Object.keys(ce.hubOptionsOf(cfg.data)).length > 0 ? (Object.keys(ce.hubOptionsOf(cfg.data)).length + " CUSTOM") : "DEFAULT"
         if (p === "options") {
             const a = appById(id)
             const n3 = Object.keys(ce.optionsOf(cfg.data, id, a !== null && Array.isArray(a.options) ? a.options : [])).length
@@ -395,7 +407,7 @@ ShellRoot {
         draft = ce.lookOf(cfg.data, scopeId)
         fontDraft = ce.fontsOf(cfg.data, scopeId)
         keyDraft = ce.keysOf(cfg.data, scopeId)
-        optDraft = page === "objects" ? ce.objectsOf(cfg.data, scopeId, optList) : ce.optionsOf(cfg.data, scopeId, optList)
+        optDraft = optStored
         fontSel = 0; keySel = 0; optSel = 0
         pickOpen = false; capturing = false; capMsg = ""
         optEditing = false; optBuf = ""; optMsg = ""
@@ -445,6 +457,127 @@ ShellRoot {
         applyMsg = ""; applyErr = ""
     }
 
+    // ===== CRT (GĐ4b): bật máy / tắt máy cho cửa sổ hub =====
+    // Hub dùng Scale transform lên card (đường kẻ ngang -> mở theo chiều dọc), nên không phải bọc lại toàn bộ nội dung.
+    readonly property var hubOpt: ce.hubOptsEff(cfg.data)
+    readonly property int crtBootMs: hubOpt.crtBootMs
+    readonly property int crtOutroMs: hubOpt.crtOutroMs
+    readonly property bool crtScan: cfg.lookBool("scanlines", true)
+    readonly property real crtScanOpacity: cfg.lookNum("scanlineOpacity", 0, 0.3, 0.05)
+    readonly property bool crtGlitch: cfg.lookBool("glitch", true)
+    property real bp: 0                       // 0..1: tiến độ bật máy
+    property real outP: 0                     // 0..1: tiến độ tắt máy
+    property bool closing: false
+    property real bdIn: 0                     // nền tối hiện dần
+    function clamp01(v) { return Math.max(0, Math.min(1, v)) }
+    readonly property real crtLineW: crtBootMs <= 0 ? 1 : Math.min(1, bp / 0.28)
+    readonly property real crtOpenH: crtBootMs <= 0 ? 1 : clamp01((bp - 0.28) / 0.42)
+    readonly property real crtContentP: crtBootMs <= 0 ? 1 : clamp01((bp - 0.55) / 0.45)
+    readonly property real crtVCollapse: clamp01((outP - 0.34) / 0.40)
+    readonly property real crtHCollapse: clamp01((outP - 0.74) / 0.26)
+    readonly property real crtXs: Math.max(0.002, crtLineW * (1 - crtHCollapse))
+    readonly property real crtYs: Math.max(0.004, crtOpenH * (1 - crtVCollapse))
+    readonly property real crtFlicker: (crtBootMs > 0 && bp < 0.04) ? 0 : ((crtBootMs > 0 && bp < 0.4 && Math.floor(bp * 70) % 2 === 1) ? 0.5 : 1)
+    property bool glitchOn: false
+    property real gdx: 3
+    readonly property bool glitchNow: glitchOn || (closing && outP < 0.34)
+    NumberAnimation { id: bootAnim; target: root; property: "bp"; from: 0; to: 1; duration: Math.max(1, root.crtBootMs); running: root.crtBootMs > 0 }
+    NumberAnimation { id: bdAnim; target: root; property: "bdIn"; from: 0; to: 1; duration: 180; running: true }
+    NumberAnimation { id: outAnim; target: root; property: "outP"; from: 0; to: 1; duration: Math.max(1, root.crtOutroMs); onFinished: Qt.quit() }
+    Timer {
+        id: glitchTimer
+        interval: 2400; repeat: true
+        running: root.crtGlitch && root.crtContentP >= 1 && !root.closing
+        onTriggered: {
+            root.gdx = 2 + Math.random() * 4
+            root.glitchOn = true
+            glitchOff.restart()
+            glitchTimer.interval = 1800 + Math.random() * 3200
+        }
+    }
+    Timer { id: glitchOff; interval: 110; repeat: false; onTriggered: root.glitchOn = false }
+    // Thoát hub: có hiệu ứng tắt máy thì phát rồi mới thoát (outAnim.onFinished -> Qt.quit()).
+    function finish() {
+        if (closing) return
+        if (crtOutroMs <= 0) { Qt.quit(); return }
+        closing = true; outP = 0
+        outAnim.start()
+    }
+
+    // ===== THÔNG BÁO BẢN MỚI (GĐ4b): chạy nền một lần sau khi mở hub; offline hoặc lỗi thì im lặng =====
+    property string noteCore: ""
+    property int noteApps: 0
+    readonly property string noteText: sl.noteLine(noteCore, noteApps)
+    Process {
+        id: noteCoreProc
+        command: [root.sumiBin, "update", "--check", "--json"]
+        stdout: StdioCollector { onStreamFinished: { root.noteCore = sl.coreNote(this.text); noteAppsProc.running = true } }
+    }
+    Process {
+        id: noteAppsProc
+        command: [root.sumiBin, "store", "registry", "--json"]
+        stdout: StdioCollector { onStreamFinished: root.noteApps = sl.appsNote(this.text) }
+    }
+    Timer { interval: 800; running: true; repeat: false; onTriggered: noteCoreProc.running = true }
+
+    // ===== AUTO-REVERT (GĐ2b-6): sau Apply, không xác nhận trong vài giây thì hoàn tác =====
+    // Bật bằng OPTIONS > HUB > AUTO-REVERT (config.hub.autoRevert, hub.autoRevertSec 10/15/30). Mặc định tắt.
+    // Hoàn tác = áp lại bản config trước đó qua chính `sumi config apply` (có backup như mọi lần ghi).
+    property string applyKind: "apply"          // apply | revert (loại lệnh applyProc đang chạy)
+    property string revertPrev: ""              // JSON config trước lần apply gần nhất
+    property bool revertArm: false              // lần apply đang chạy có bật đếm ngược sau khi xong không
+    property bool revertActive: false
+    property int revertLeft: 0
+    property int revertTotal: 0
+    function revertArmed() {
+        if (page === "options" && scopeId === "hub") return false    // đổi chính cài đặt auto-revert thì không tự hoàn tác
+        return ce.autoRevertOf(cfg.data).on
+    }
+    function applyDone(code) {
+        applyOk = (code === 0)
+        if (applyKind === "revert") {
+            applyMsg = code === 0 ? "REVERTED" : ("REVERT FAILED (" + code + ")")
+            if (code === 0) applyErr = ""
+            applyKind = "apply"
+            return
+        }
+        applyMsg = code === 0 ? "APPLIED" : ("FAILED (" + code + ")")
+        if (code === 0) {
+            applyErr = ""
+            if (revertArm) {
+                revertTotal = ce.autoRevertOf(cfg.data).sec
+                revertLeft = revertTotal
+                revertActive = true
+            }
+        }
+        revertArm = false
+    }
+    function revertTick() {
+        if (!revertActive) return
+        revertLeft = revertLeft - 1
+        if (revertLeft <= 0) doRevert()
+    }
+    function keepConfig() {
+        if (!revertActive) return
+        revertActive = false
+        applyOk = true; applyMsg = "KEPT"; applyErr = ""
+    }
+    function doRevert() {
+        if (!revertActive) return
+        revertActive = false
+        if (applyProc.running) { applyOk = false; applyMsg = "REVERT FAILED"; applyErr = "đang bận ghi config"; return }
+        applyKind = "revert"; applyOk = false; applyErr = ""; applyMsg = "REVERTING..."
+        applyProc.command = [sumiBin, "config", "apply", revertPrev]
+        applyProc.running = true
+    }
+    function revertKey(event) {
+        const k = event.key
+        if (event.isAutoRepeat) return
+        if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) keepConfig()
+        else if (k === Qt.Key_Escape || k === Qt.Key_Backspace || k === Qt.Key_Delete) doRevert()
+    }
+    Timer { id: revertTimer; interval: 1000; repeat: true; running: root.revertActive; onTriggered: root.revertTick() }
+
     function fail(msg, err) { applyOk = false; applyMsg = msg; applyErr = err || "" }
     // Ghi config mới qua `sumi config apply` (backup + tmp/rename nằm trong lệnh đó).
     function commitConfig(next) {
@@ -456,6 +589,9 @@ ShellRoot {
             try { JSON.parse(raw) } catch (e) { fail("CONFIG HỎNG", "config.json không đọc được; chạy: sumi config restore"); return }
         }
         applyErr = ""; applyOk = false; applyMsg = "WRITING..."
+        applyKind = "apply"
+        revertPrev = JSON.stringify(ce.revertSnapshot(cfg.data))
+        revertArm = revertArmed()
         applyProc.command = [sumiBin, "config", "apply", JSON.stringify(next)]
         applyProc.running = true
     }
@@ -485,7 +621,8 @@ ShellRoot {
         if (!optDirty) { fail("NO CHANGES"); return }
         const errs = ce.validateOptions(optDraft, optList, scopeId)
         if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
-        commitConfig(page === "objects" ? ce.withObjects(cfg.data, scopeId, optDraft, optList) : ce.withOptions(cfg.data, scopeId, optDraft, optList))
+        commitConfig(page === "objects" ? ce.withObjects(cfg.data, scopeId, optDraft, optList)
+                     : (scopeId === "hub" ? ce.withHubOptions(cfg.data, optDraft) : ce.withOptions(cfg.data, scopeId, optDraft, optList)))
     }
     function applyKeys() {
         if (!hasScope) { fail("REJECTED", "không có app nào có keybind"); return }
@@ -497,11 +634,7 @@ ShellRoot {
     Process {
         id: applyProc
         stderr: StdioCollector { onStreamFinished: if (root.applyMsg !== "APPLIED") root.applyErr = this.text.trim() }
-        onExited: (code, status) => {
-            root.applyOk = (code === 0)
-            root.applyMsg = code === 0 ? "APPLIED" : ("FAILED (" + code + ")")
-            if (code === 0) root.applyErr = ""
-        }
+        onExited: (code, status) => root.applyDone(code)
     }
     // Danh sách font hệ thống: A = mọi font (+ spacing, 100/110 là mono), J = font có glyph tiếng Nhật.
     Process {
@@ -521,7 +654,7 @@ ShellRoot {
     readonly property var pvApp: {
         if (page === "store") return null
         if (page === "apps") return cur
-        if (page === "theme" && scopeId === "hub") return null
+        if ((page === "theme" || page === "options") && scopeId === "hub") return null
         if (scopeApp !== null && scopeId !== "global") return scopeApp
         return cur !== null ? cur : (apps.length > 0 ? apps[0] : null)
     }
@@ -648,6 +781,7 @@ ShellRoot {
                 storeApps = r.data.apps
                 storeStale = r.data.stale === true
                 storeLoaded = true
+                noteApps = sl.updatesIn(r.data.apps)
                 let i = -1
                 for (let k = 0; k < r.data.apps.length; k++) if (r.data.apps[k].id === keep) { i = k; break }
                 storeSel = i >= 0 ? i : Math.max(0, Math.min(storeSel, r.data.apps.length - 1))
@@ -753,6 +887,7 @@ ShellRoot {
     }
 
     readonly property string footerText: {
+        if (revertActive) return "ENTER KEEP   ESC REVERT NOW"
         if (page === "apps") return "W/S APP  A/D FUNC  ENTER RUN  T THEME  F FONT  K KEYS  O OPTION  J OBJECT  V PREVIEW  G STORE  ESC"
         if (page === "store") {
             if (storeBusy) return "WORKING ...   PLEASE WAIT"
@@ -769,7 +904,7 @@ ShellRoot {
         return "W/S ACTION  Q/E APP  ENTER REBIND  SPACE APPLY  R DEFAULT  X ALL  TAB NEXT  ESC BACK"
     }
 
-    Timer { id: quitTimer; interval: 150; repeat: false; onTriggered: Qt.quit() }
+    Timer { id: quitTimer; interval: 150; repeat: false; onTriggered: root.finish() }
 
     Process {
         id: listProc
@@ -790,15 +925,14 @@ ShellRoot {
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.namespace: "sumi-hub"
-        WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+        WlrLayershell.keyboardFocus: root.closing ? WlrKeyboardFocus.None : WlrKeyboardFocus.Exclusive
 
         // nền tối; bấm ra ngoài = đóng
         Rectangle {
             anchors.fill: parent
             color: "#000000"
-            opacity: 0
+            opacity: 0.5 * root.bdIn * (1 - root.outP)
             MouseArea { anchors.fill: parent; onClicked: root.dismiss() }
-            NumberAnimation on opacity { to: 0.5; duration: 180; running: true }
         }
 
         Item {
@@ -809,6 +943,11 @@ ShellRoot {
             function fs(n) { return Math.max(8, Math.round(n * u)) }
             width: px(1000)
             height: px(600)
+            opacity: root.crtFlicker
+            transform: Scale {
+                origin.x: card.width / 2; origin.y: card.height / 2
+                xScale: root.crtXs; yScale: root.crtYs
+            }
             readonly property real m: px(26)
             readonly property real pvW: px(340)
             readonly property real pvH: Math.round(pvW * 9 / 16)
@@ -821,8 +960,10 @@ ShellRoot {
             focus: true
             Keys.onPressed: (event) => {
                 if (!card.inputReady) return
+                if (root.closing) { event.accepted = true; return }
                 const k = event.key
                 const ar = event.isAutoRepeat
+                if (root.revertActive) { root.revertKey(event); event.accepted = true; return }
                 if (root.page === "apps") {
                     if (k === Qt.Key_Escape || k === Qt.Key_Q) { if (!ar) root.dismiss(); event.accepted = true }
                     else if (k === Qt.Key_T || k === Qt.Key_Tab) { if (!ar) root.openSettings("theme"); event.accepted = true }
@@ -911,6 +1052,16 @@ ShellRoot {
                 Rectangle {
                     width: card.px(150); height: parent.height; color: th.ink
                     Text {
+                        anchors.centerIn: parent; anchors.horizontalCenterOffset: card.px(root.gdx) * 1.5
+                        visible: root.glitchNow; text: "SUMI 墨"; color: th.danger; opacity: 0.75
+                        font.family: root.fontData; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 3
+                    }
+                    Text {
+                        anchors.centerIn: parent; anchors.horizontalCenterOffset: -card.px(root.gdx) * 1.5
+                        visible: root.glitchNow; text: "SUMI 墨"; color: th.paper; opacity: 0.45
+                        font.family: root.fontData; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 3
+                    }
+                    Text {
                         anchors.centerIn: parent; text: "SUMI 墨"; color: th.paper
                         font.family: root.fontData; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 3
                     }
@@ -948,6 +1099,13 @@ ShellRoot {
                     }
                 }
                 Text {
+                    anchors.right: topRight.left; anchors.rightMargin: card.px(28); anchors.verticalCenter: parent.verticalCenter
+                    visible: root.page === "apps" && root.noteText !== ""
+                    text: root.noteText + "   (G)"; color: th.ink
+                    font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 1; font.bold: true
+                }
+                Text {
+                    id: topRight
                     anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     text: root.inSettings ? root.scopeName : (root.page === "store" ? (root.storeApps.length + " IN REGISTRY") : (root.apps.length + " INSTALLED")); color: th.ink
                     font.family: root.fontData; font.pixelSize: card.fs(16); font.bold: true
@@ -2100,6 +2258,62 @@ ShellRoot {
                     }
                 }
                 MouseArea { anchors.fill: parent; z: 3 }     // preview chỉ để xem, không nhận chuột
+            }
+
+            // ---------- CRT: scanline + thanh quét (chỉ trang trí, không bắt chuột) ----------
+            Repeater {
+                model: root.crtScan ? Math.ceil(card.height / Math.max(3, Math.round(3 * card.u))) : 0
+                delegate: Rectangle {
+                    required property int index
+                    y: index * Math.max(3, Math.round(3 * card.u))
+                    width: card.width; height: 1
+                    color: th.ink; opacity: root.crtScanOpacity; z: 40
+                }
+            }
+            Rectangle {
+                id: scanBar
+                visible: root.crtScan && root.crtContentP > 0 && !root.closing
+                width: card.width; height: card.px(110); z: 39
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: Qt.rgba(th.ink.r, th.ink.g, th.ink.b, 0.0) }
+                    GradientStop { position: 0.5; color: Qt.rgba(th.ink.r, th.ink.g, th.ink.b, 0.06) }
+                    GradientStop { position: 1.0; color: Qt.rgba(th.ink.r, th.ink.g, th.ink.b, 0.0) }
+                }
+                SequentialAnimation on y {
+                    loops: Animation.Infinite
+                    running: scanBar.visible
+                    NumberAnimation { from: -scanBar.height; to: card.height; duration: 3200; easing.type: Easing.Linear }
+                    PauseAnimation { duration: 1200 }
+                }
+            }
+
+            // ---------- AUTO-REVERT: thanh đếm ngược sau Apply ----------
+            Item {
+                id: revBar
+                visible: root.revertActive
+                z: 20
+                x: card.m; width: card.width - 2 * card.m
+                y: card.height - card.px(96) - card.px(52)
+                height: card.px(48)
+                Rectangle { anchors.fill: parent; color: th.ink }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    height: card.px(4)
+                    width: root.revertTotal > 0 ? parent.width * (root.revertLeft / root.revertTotal) : 0
+                    color: th.danger
+                }
+                Text {
+                    x: card.px(16); anchors.verticalCenter: parent.verticalCenter
+                    text: "KEEP THIS SETTING?   REVERTING IN " + root.revertLeft + " s"
+                    color: th.paper
+                    font.family: root.fontData; font.pixelSize: card.fs(17); font.bold: true; font.letterSpacing: 1.5
+                }
+                Text {
+                    anchors.right: parent.right; anchors.rightMargin: card.px(16); anchors.verticalCenter: parent.verticalCenter
+                    text: "ENTER  KEEP      ESC  REVERT NOW"
+                    color: th.paper
+                    font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 1.5
+                }
             }
 
             // ---------- chân trang ----------

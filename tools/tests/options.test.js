@@ -97,6 +97,25 @@ eq(on.apps.jigen.objects, { timer: { speed: 0.5 } }, 'id bằng mặc định kh
 eq(ce.validateOptions({ 'timer.speed': 9 }, OO, 'jigen'), ['giá trị không hợp lệ cho timer.speed'], 'validate speed ngoài khoảng');
 eq(ce.validateOptions({ 'timer.id': 'nope' }, OO, 'jigen'), ['option lạ: timer.id'].map(x => x.replace('option lạ: timer.id', 'giá trị không hợp lệ cho timer.id')), 'validate id lạ');
 eq([ce.optNudge(OO[0], 'globe', 1), ce.optNudge(OO[0], 'hourglass', 1), ce.optNudge(OO[1], 1, 1), ce.optNudge(OO[2], true, 1)], ['torus', 'globe', 1.1, false], 'nudge hàng object');
+
+// ---- OPTION của HUB + auto-revert (2b-5/6) ----
+const HL = ce.hubOptsList();
+eq(HL.map(o => o.key), ['autoRevert', 'autoRevertSec', 'maxBackups', 'checkUpdateHours', 'crtBootMs', 'crtOutroMs'], 'hubOptsList');
+eq(ce.hubOptsEff({ hub: { crtBootMs: 0, maxBackups: 7, autoRevertSec: 99 } }), { autoRevert: false, autoRevertSec: 15, maxBackups: 7, checkUpdateHours: 6, crtBootMs: 0, crtOutroMs: 360 }, 'hubOptsEff: mặc định + giá trị hợp lệ (0 hợp lệ, enum sai về mặc định)');
+eq(ce.hubOptsEff(null).crtBootMs, 600, 'hubOptsEff null');
+eq([ce.optOk(HL[1], 10), ce.optOk(HL[1], 15), ce.optOk(HL[1], 30), ce.optOk(HL[1], 20), ce.optOk(HL[1], '15')], [true, true, true, false, false], 'enum số: chỉ 10/15/30');
+eq([ce.optNudge(HL[1], 15, 1), ce.optNudge(HL[1], 30, 1), ce.optNudge(HL[1], 10, -1), ce.optFormat(HL[1], 15)], [30, 10, 30, '15'], 'nudge enum số');
+const hd0 = { version: 1, global: {}, hub: { theme: 'ink', registryUrl: 'https://raw.githubusercontent.com/o/r/main/i.json', autoRevert: true, autoRevertSec: 30, maxBackups: 20, bogus: 1 }, apps: {} };
+eq(ce.hubOptionsOf(hd0), { autoRevert: true, autoRevertSec: 30 }, 'hubOptionsOf bỏ giá trị mặc định và key lạ');
+eq(ce.hubOptionsOf(null), {}, 'hubOptionsOf null');
+let hn = ce.withHubOptions(hd0, { autoRevert: false, maxBackups: 50 });
+eq(Object.keys(hn.hub).sort(), ['bogus', 'maxBackups', 'registryUrl', 'theme'], 'withHubOptions giữ theme/registryUrl/key lạ, xoá autoRevert/autoRevertSec'); eq([hn.hub.maxBackups, hn.hub.theme, 'autoRevert' in hn.hub], [50, 'ink', false], 'giá trị hub');
+hn = ce.withHubOptions({ version: 1, global: {}, hub: { autoRevert: true } }, {});
+eq(hn.hub, undefined, 'hub rỗng thì bị xoá');
+hn = ce.withHubOptions({}, { checkUpdateHours: 12 }); eq([hn.version, hn.global, hn.hub], [1, {}, { checkUpdateHours: 12 }], 'từ config trống vẫn hợp lệ cho apply');
+eq([ce.autoRevertOf({}).on, ce.autoRevertOf({}).sec, ce.autoRevertOf({ hub: { autoRevert: true, autoRevertSec: 10 } }), ce.autoRevertOf({ hub: { autoRevert: 'yes', autoRevertSec: 7 } }), ce.autoRevertOf(null)], [false, 15, { on: true, sec: 10 }, { on: false, sec: 15 }, { on: false, sec: 15 }], 'autoRevertOf');
+eq(ce.revertSnapshot({ apps: { a: 1 } }), { apps: { a: 1 }, version: 1, global: {} }, 'snapshot thêm version/global');
+eq(ce.revertSnapshot(undefined), { version: 1, global: {} }, 'snapshot từ rỗng'); const orig = { version: 1, global: { x: 1 } }; ce.revertSnapshot(orig).global.x = 9; eq(orig.global.x, 1, 'snapshot là bản sao');
 // ---- cảnh báo chéo ----
 eq(ce.optConflicts(JO, {}), {}, 'mặc định không cảnh báo');
 eq(ce.optConflicts(JO, { 'timer.presets': [10, 20] }), { 'timer.defaultMinutes': ['30 không nằm trong timer.presets'] }, 'defaultMinutes ngoài presets');

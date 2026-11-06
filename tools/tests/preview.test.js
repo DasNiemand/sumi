@@ -65,6 +65,7 @@ R = mk({ page: 'apps', cur: KAK, apps: [JIGEN, KAK] }); eq([R.pvApp.id, R.pvMode
 R = mk({ page: 'apps', cur: null, apps: [] }); eq([R.pvApp, R.pvFn, R.pvMode], [null, '', ''], 'không có app');
 R = mk({ page: 'store', cur: JIGEN, apps: [JIGEN] }); eq(R.pvApp, null, 'Store không có preview');
 R = mk({ page: 'theme', scopeId: 'hub', cur: JIGEN, apps: [JIGEN] }); eq(R.pvApp, null, 'scope HUB không có preview');
+R = mk({ page: 'options', scopeId: 'hub', cur: JIGEN, apps: [JIGEN] }); eq(R.pvApp, null, 'OPTIONS > HUB không có preview');
 R = mk({ page: 'theme', scopeId: 'global', cur: KAK, apps: [JIGEN, KAK] }); eq(R.pvApp.id, 'kakunin', 'scope GLOBAL: app đang chọn');
 R = mk({ page: 'theme', scopeId: 'global', cur: null, apps: [JIGEN, KAK] }); eq(R.pvApp.id, 'jigen', 'scope GLOBAL không có app chọn: app đầu');
 R = mk({ page: 'font', scopeId: 'jigen', scopeApp: JIGEN, cur: KAK, apps: [JIGEN, KAK], fnSel: 2 }); eq([R.pvApp.id, R.pvFn], ['jigen', 'shutdown'], 'scope app: app của scope, function đầu (fnSel chỉ áp dụng ở trang APPS)');

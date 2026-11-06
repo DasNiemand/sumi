@@ -62,5 +62,9 @@ done
 # 4. lệnh sumi
 install -m 0755 "$SRC/sumi/bin/sumi" "$BIN_DIR/sumi"
 install -m 0755 "$SRC/sumi/bin/sumi-store" "$BIN_DIR/sumi-store"
+install -m 0755 "$SRC/sumi/bin/sumi-self" "$BIN_DIR/sumi-self"
+install -m 0755 "$SRC/sumi/contrib/safe-close.sh" "$BIN_DIR/sumi-safe-close"
+# Bản cài dev: `sumi update` từ chối (cập nhật = chạy lại install-dev.sh)
+printf '{"version":"dev","lib":"%s","source":"install-dev","installed_at":"%s"}\n' "$(tr -d '[:space:]' <"$SUMI_HOME/lib/VERSION" 2>/dev/null)" "$(date -u +%FT%TZ)" >"$SUMI_HOME/install.json"
 echo "đã cài $BIN_DIR/sumi và $BIN_DIR/sumi-store"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "lưu ý: $BIN_DIR chưa nằm trong PATH" ;; esac

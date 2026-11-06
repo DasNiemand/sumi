@@ -57,6 +57,13 @@ eq(sl.opArgs('update', ins({ conflict: 'installed' }), 'jigen', ''), ['update', 
 eq(sl.opArgs('remove', null, 'jigen', ''), ['remove', 'jigen'], 'remove'); eq(sl.opArgs('restore', null, 'jigen', '20261104-112401'), ['restore', 'jigen', '20261104-112401'], 'restore');
 eq(sl.opArgs('???', null, 'x', ''), [], 'op lạ -> rỗng');
 
+
+// ---- thông báo bản mới ----
+eq([sl.coreNote('{"ok":true,"available":true,"latest":"1.1.0"}'), sl.coreNote('{"ok":true,"available":false,"latest":"1.0.0"}'), sl.coreNote('{"ok":false,"code":"dev_install","message":"x"}'), sl.coreNote(''), sl.coreNote('rác')], ['v1.1.0', '', '', '', ''], 'coreNote');
+eq([sl.updatesIn([{ state: 'update' }, { state: 'installed' }, { state: 'update' }, null]), sl.updatesIn(null), sl.updatesIn([])], [2, 0, 0], 'updatesIn');
+eq([sl.appsNote('{"ok":true,"apps":[{"state":"update"},{"state":"available"}]}'), sl.appsNote('{"ok":false,"code":"offline","message":"x"}'), sl.appsNote('')], [1, 0, 0], 'appsNote');
+eq([sl.noteLine('v1.1.0', 2), sl.noteLine('v1.1.0', 0), sl.noteLine('', 1), sl.noteLine('', 0), sl.noteLine('', 3)], ['UPDATE   SUMI v1.1.0  ·  2 APPS', 'UPDATE   SUMI v1.1.0', 'UPDATE   1 APP', '', 'UPDATE   3 APPS'], 'noteLine');
+
 // ---- máy trạng thái trong hub (hàm thật, giả lập root) ----
 const fnNames = ['storeRun', 'storeRefresh', 'storeDone', 'openStore', 'closeStore', 'storeMove', 'storeAction', 'storeRemoveAsk', 'storeBackupsOpen', 'storeRestoreAsk', 'storeConfirm', 'storeKey'];
 const mk = () => {
@@ -158,5 +165,6 @@ R = mk(); R.page = 'store'; key(R, R.Qt.Key_R); eq(R.storeProc.command.join(' ')
 
 const hubVis = hubSrc.match(/id: storeList\s+visible: ([^\n]+)/)[1];
 eq(/storeView !== "confirm"/.test(hubVis), true, 'danh sách trái ẩn ở màn xác nhận (tránh đè chữ)');
+eq(/noteApps = sl\.updatesIn\(r\.data\.apps\)/.test(hubSrc), true, 'tab Store làm mới số app có bản mới');
 console.log(f === 0 ? `TAT CA OK (${n} kiem tra, store-ui)` : `${f}/${n} LOI`);
 process.exit(f ? 1 : 0);

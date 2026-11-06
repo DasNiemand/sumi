@@ -121,6 +121,16 @@
             15,
             30
           ]
+        },
+        "crtBootMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
+        },
+        "crtOutroMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
         }
       }
     },
