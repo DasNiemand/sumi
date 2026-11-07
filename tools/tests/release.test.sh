@@ -111,6 +111,24 @@ out="$(PATH="$T/shim:$PATH" R "$A" 1.5.0 --yes 2>&1)"; c=$?
 check "pin.sh ghim SHA khác commit -> không commit index, index.json được hoàn lại" '[ "$c" != 0 ] && grep -q "KHÔNG commit index" <<<"$out" && [ "$(git -C "$IX" rev-parse HEAD)" = "$IXH" ] && [ -z "$(git -C "$IX" status --porcelain)" ]' "$out"
 git -C "$A" tag -d v1.5.0 >/dev/null 2>&1; git -C "$A" push -q origin ":refs/tags/v1.5.0" 2>/dev/null; git -C "$A" reset -q --hard HEAD~1 2>/dev/null; git -C "$A" push -q -f origin main 2>/dev/null
 
+# ---------- gắn tag cho version hiện tại (lần phát hành đầu) ----------
+mkrepo sumi-first core; FR="$T/w/sumi-first"; FH="$(git -C "$FR" rev-parse HEAD)"
+out="$(R "$FR" 1.0.0 --yes 2>&1)"; c=$?
+check "version bằng hiện tại, không --force -> từ chối và gợi ý --force" '[ "$c" != 0 ] && grep -q "\-\-force" <<<"$out" && [ -z "$(git -C "$FR" tag)" ]' "$out"
+out="$(R "$FR" 1.0.0 --force --yes 2>&1)"; c=$?
+check "--force: chỉ gắn tag trên HEAD, không tạo commit mới, tag lên remote" '[ "$c" = 0 ] && [ "$(git -C "$FR" rev-parse HEAD)" = "$FH" ] && [ "$(git -C "$FR" rev-parse "v1.0.0^{commit}")" = "$FH" ] && [ "$(git --git-dir="$T/git/DasNiemand/sumi-first.git" rev-parse "v1.0.0^{commit}")" = "$FH" ] && grep -q "gắn tag" <<<"$out"' "$out"
+
+# ---------- manifest tụt sau tag (file bị ghi đè bằng bản cũ) ----------
+sed -i 's/"version": "[0-9.]*"/"version": "1.0.0"/' "$A/manifest.json"; git -C "$A" add -A; git -C "$A" commit -q -m "oops: ghi de version cu"
+OOPS="$(git -C "$A" rev-parse HEAD)"
+out="$(R "$A" 1.1.5 --yes 2>&1)"; c=$?
+check "version thấp hơn tag cao nhất -> từ chối, giải thích manifest đang tụt sau tag" '[ "$c" != 0 ] && grep -q "tag cao nhất đã phát hành (v1.2.0)" <<<"$out" && grep -q "TỤT SAU tag v1.2.0" <<<"$out" && [ "$(git -C "$A" rev-parse HEAD)" = "$OOPS" ]' "$out"
+out="$(R "$A" 1.2.0 --yes 2>&1)"; c=$?
+check "version bằng tag cao nhất -> từ chối" '[ "$c" != 0 ] && grep -q "tag cao nhất" <<<"$out"' "$out"
+out="$(R "$A" 1.1.9 --dry-run --force 2>&1)"; c=$?
+check "--force bỏ qua kiểm tra tag cao nhất" '[ "$c" = 0 ] && grep -q "dry-run" <<<"$out"' "$out"
+git -C "$A" reset -q --hard HEAD~1
+
 # ---------- --no-pin, lõi, remote hỏng ----------
 echo 'x' >"$A/more"; git -C "$A" add -A; git -C "$A" commit -q -m more
 out="$(R "$A" 1.4.0 --yes --no-pin --index "$T/khong-co" 2>&1)"; c=$?

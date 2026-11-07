@@ -54,8 +54,18 @@ say "$KIND '$ID': $CUR -> $VER ($TARGET)"
 # ---------- kiểm tra ----------
 branch="$(G rev-parse --abbrev-ref HEAD 2>/dev/null)"
 [ "$branch" = main ] || die "đang ở nhánh '$branch', phát hành chỉ từ nhánh main"
-if [ "$FORCE" != 1 ] && [ "$(ver_num "$VER")" -le "$(ver_num "$CUR")" ]; then die "version mới ($VER) phải lớn hơn hiện tại ($CUR) (--force để bỏ qua)"; fi
+if [ "$FORCE" != 1 ] && [ "$(ver_num "$VER")" -le "$(ver_num "$CUR")" ]; then die "version mới ($VER) phải lớn hơn hiện tại ($CUR). Muốn chỉ gắn tag cho version hiện tại (vd lần phát hành đầu): thêm --force"; fi
 G remote get-url origin >/dev/null 2>&1 || die "repo chưa có remote 'origin'"
+# Version phải lớn hơn mọi tag đã phát hành (local + remote): bắt lỗi manifest/VERSION bị tụt lại sau tag (vd file bị ghi đè bằng bản cũ).
+HIGH=""
+while IFS= read -r t; do
+    t="${t#v}"; [[ "$t" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    if [ -z "$HIGH" ] || [ "$(ver_num "$t")" -gt "$(ver_num "$HIGH")" ]; then HIGH="$t"; fi
+done < <({ G tag -l 'v*'; G ls-remote --tags origin 'refs/tags/v*' 2>/dev/null | awk '{ sub(/^refs\/tags\//, "", $2); sub(/\^\{\}$/, "", $2); print $2 }'; } | sort -u)
+if [ -n "$HIGH" ] && [ "$FORCE" != 1 ] && [ "$(ver_num "$VER")" -le "$(ver_num "$HIGH")" ]; then
+    die "version mới ($VER) phải lớn hơn tag cao nhất đã phát hành (v$HIGH). Version hiện tại trong repo là $CUR$( [ "$(ver_num "$CUR")" -lt "$(ver_num "$HIGH")" ] && echo ": đang TỤT SAU tag v$HIGH, kiểm tra xem file có bị ghi đè bằng bản cũ không")."
+fi
+[ -z "$HIGH" ] || [ "$(ver_num "$CUR")" -ge "$(ver_num "$HIGH")" ] || say "cảnh báo: version trong repo ($CUR) thấp hơn tag cao nhất (v$HIGH)"
 G rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 && die "tag $TAG đã có ở local (xoá: git tag -d $TAG nếu là tag lỡ tạo)"
 if G ls-remote --tags origin "refs/tags/$TAG" 2>/dev/null | grep -q .; then die "tag $TAG đã có trên remote"; fi
 if ! G ls-remote origin HEAD >/dev/null 2>&1; then die "không kết nối được remote origin (mạng hoặc quyền: thử 'gh auth status')"; fi
@@ -85,14 +95,20 @@ if [ -n "$PENDING" ] && [ "$YES" != 1 ]; then
 fi
 
 # ---------- sửa version, commit, tag ----------
-if [ "$KIND" = app ]; then
-    sed -i "0,/\"version\": \"$CUR\"/s//\"version\": \"$VER\"/" "$TARGET/manifest.json"
-    [ "$(jq -r .version "$TARGET/manifest.json")" = "$VER" ] || die "không sửa được version trong manifest.json (định dạng lạ?). Chưa commit gì."
-else
-    printf '%s\n' "$VER" >"$TARGET/VERSION"
+if [ "$CUR" != "$VER" ]; then
+    if [ "$KIND" = app ]; then
+        sed -i "0,/\"version\": \"$CUR\"/s//\"version\": \"$VER\"/" "$TARGET/manifest.json"
+        [ "$(jq -r .version "$TARGET/manifest.json")" = "$VER" ] || die "không sửa được version trong manifest.json (định dạng lạ?). Chưa commit gì."
+    else
+        printf '%s\n' "$VER" >"$TARGET/VERSION"
+    fi
 fi
 G add -A
-G commit -q -m "${MSG:-$TAG}" || die "commit thất bại"
+if G diff --cached --quiet; then
+    say "không có gì để commit: gắn tag $TAG trên HEAD hiện tại"
+else
+    G commit -q -m "${MSG:-$TAG}" || die "commit thất bại"
+fi
 G tag -a "$TAG" -m "$TAG"
 SHA="$(G rev-parse "$TAG^{commit}")"
 say "đã commit và tag $TAG (${SHA:0:12})"

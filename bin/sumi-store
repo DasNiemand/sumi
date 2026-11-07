@@ -350,6 +350,10 @@ prepare_stage() {  # prepare_stage <id> -> điền ENTRY, STAGE ; kết quả va
     stage_clone "$id" "$E_REPO" "$E_REF" "$E_SHA"
     validate_stage "$STAGE/src" "$id"
     VALID=$?
+    if [ "$VALID" -eq 0 ]; then
+        local mv; mv="$(jq -r '.version // ""' "$STAGE/src/manifest.json")"
+        [ "$mv" = "${E_REF#v}" ] || WARN+=("version trong manifest ($mv) khác tag $E_REF: bản phát hành này có thể bị đóng gói sai")
+    fi
     LIB_NOW="$(lib_version)"
     LIB_REQ="$(jq -r '.requires_lib // ""' "$STAGE/src/manifest.json" 2>/dev/null)"
     if [ -n "$LIB_NOW" ] && [ -n "$LIB_REQ" ] && lib_satisfies "$LIB_NOW" "$LIB_REQ"; then COMPAT=true; else COMPAT=false; fi

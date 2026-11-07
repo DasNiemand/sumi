@@ -161,6 +161,13 @@ bad_case "ipc_target sai"                      evil6 '.ipc_target="clock-widget"
 bad_case "lib không tương thích"               evil7 '.requires_lib=">=9.0"' ':' 4
 check "lỗi không để rác trong staging" '[ -z "$(ls -A "$SUMI_HOME/.staging" 2>/dev/null)" ]'
 
+# 8b. manifest.version khác tag: chỉ cảnh báo
+sha="$(mkrepo drift v1.0.0 9.9.9)"
+writereg "drift:v1.0.0:$sha"
+out="$(J inspect drift)"
+check "version manifest khác tag -> cảnh báo ở inspect, vẫn cài được" '[ "$(jq -r .ok <<<"$out")" = true ] && jq -e ".warnings | map(select(contains(\"khác tag v1.0.0\"))) | length == 1" <<<"$out" >/dev/null' "$out"
+check "version manifest khớp tag -> không cảnh báo" 'writereg "alpha:v1.0.0:$SHA_A1"; out="$(J inspect alpha)"; [ "$(jq -r ".warnings | length" <<<"$out")" = 0 ]' "$out"
+
 # 9. SHA/tag bị giả mạo
 sha="$(mkrepo tamper v1.0.0 1.0.0)"
 writereg "tamper:v1.0.0:1111111111111111111111111111111111111111"
