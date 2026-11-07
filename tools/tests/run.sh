@@ -6,6 +6,9 @@ D="$(cd "$(dirname "$0")" && pwd)"; R="$D/../.."; A="$R/.."
 bash "$D/store.test.sh" | tail -2
 bash "$D/safeclose.test.sh" | tail -2
 bash "$D/self.test.sh" | tail -2
+bash "$D/newapp.test.sh" | tail -2
+bash "$D/release.test.sh" | tail -2
+bash "$D/doctor.test.sh" | tail -2
 node "$D/theme.test.js" "$R/lib/SumiTheme.qml" | tail -3
 node "$D/edit.test.js" "$R/lib/SumiConfigEdit.qml"
 node "$D/prefs.test.js" "$R/lib/SumiConfigEdit.qml"
@@ -16,3 +19,4 @@ node "$D/jigen-objects.test.js" "$A/sumi-jigen"
 node "$D/preview.test.js" "$R/lib/SumiConfigEdit.qml" "$R/hub/shell.qml"
 node "$D/revert.test.js" "$R/lib/SumiConfigEdit.qml" "$R/hub/shell.qml"
 node "$D/crt.test.js" "$R/hub/shell.qml"
+node "$D/shape.test.js" "$R/hub" "$R/templates" "$A/sumi-jigen" "$A/sumi-kakunin"

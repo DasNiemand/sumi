@@ -25,9 +25,12 @@ bin/sumi         sumi <app> [function] | hub | list | reset | config | store | v
 bin/sumi-store   backend của store (registry, inspect, install, update, remove, restore)
 bin/sumi-self    cập nhật / gỡ lõi (version, update, uninstall)
 contrib/         safe-close.sh (cài thành sumi-safe-close), clockwidget-run.sh (shim jigen)
+skills/sumi      skill cho Claude (cách làm việc với SUMI: quy ước, kiểm chứng, phát hành)
+templates/app    khung app mới; tạo bằng `bash tools/new-app.sh <id>`
 install.sh       cài lõi từ bản clone; VERSION = version lõi (tag annotated vX.Y.Z phải khớp)
 install-dev.sh   cài kiểu dev: copy lib + hub + app từ các repo cạnh nhau vào ~/.local/share/sumi
 ```
 
+Phát hành: `bash tools/release.sh ../sumi-<id> X.Y.Z` (app) hoặc `bash tools/release.sh . X.Y.Z` (lõi); chẩn đoán: `sumi doctor`.
 Kiểm tra hợp đồng: `python3 tools/validate.py all` (cần `jsonschema`).
 Phát triển: `bash install-dev.sh ~/dev/sumi` (chạy lại sau mỗi lần sửa code), rồi `sumi hub`.

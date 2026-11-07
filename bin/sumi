@@ -186,26 +186,97 @@ cmd_self() {
 }
 
 cmd_doctor() {
-    local ok=1
-    [ -f "$SUMI_HOME/install.json" ] && echo "ok    SUMI $(jq -r '.version // "?"' "$SUMI_HOME/install.json" 2>/dev/null) (lib $(cat "$SUMI_HOME/lib/VERSION" 2>/dev/null || echo '?'))" || echo "chưa có install.json (chưa cài bằng install.sh hoặc install-dev.sh)"
-    for c in jq quickshell qs hyprctl; do
-        if command -v "$c" >/dev/null 2>&1; then echo "ok    $c"; else echo "THIẾU $c"; ok=0; fi
-    done
-    [ -d "$SUMI_HOME/lib" ] && echo "ok    lib: $SUMI_HOME/lib" || { echo "THIẾU lib: $SUMI_HOME/lib"; ok=0; }
-    if [ -f "$SUMI_HOME/hub/shell.qml" ]; then
-        echo "ok    hub lib=$(cat "$SUMI_HOME/hub/lib/VERSION" 2>/dev/null || echo THIẾU)"
+    local fails=0 warns=0
+    ok_()   { echo "ok    $*"; }
+    warn_() { echo "warn  $*"; warns=$((warns + 1)); }
+    fail_() { echo "FAIL  $*"; fails=$((fails + 1)); }
+    local c v
+    # --- lõi ---
+    if [ -f "$SUMI_HOME/install.json" ] && jq -e . "$SUMI_HOME/install.json" >/dev/null 2>&1; then
+        ok_ "SUMI $(jq -r '.version // "?"' "$SUMI_HOME/install.json") (lib $(cat "$SUMI_HOME/lib/VERSION" 2>/dev/null || echo '?'))"
     else
-        echo "chưa có hub ($SUMI_HOME/hub)"
+        warn_ "chưa có install.json hợp lệ (chưa cài bằng install.sh hoặc install-dev.sh)"
     fi
-    [ -f "$CFG_DIR/colors.json" ] && echo "ok    colors.json" || echo "chưa có colors.json (app dùng màu mặc định)"
-    [ -f "$CFG_DIR/config.json" ] && echo "ok    config.json" || echo "chưa có config.json (app dùng mặc định)"
-    local d
+    for c in jq git curl; do command -v "$c" >/dev/null 2>&1 && ok_ "$c" || fail_ "thiếu $c"; done
+    if command -v quickshell >/dev/null 2>&1 || command -v qs >/dev/null 2>&1; then ok_ "quickshell ($(command -v quickshell >/dev/null 2>&1 && echo quickshell || echo qs))"; else fail_ "thiếu quickshell (quickshell hoặc qs)"; fi
+    command -v hyprctl >/dev/null 2>&1 && ok_ "hyprctl" || warn_ "thiếu hyprctl (hub không chọn được màn hình theo focus)"
+    command -v flock >/dev/null 2>&1 && ok_ "flock" || warn_ "thiếu flock (ghi config không có khoá)"
+    local self_dir; self_dir="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
+    case ":$PATH:" in *":$self_dir:"*) ok_ "PATH có $self_dir" ;; *) warn_ "$self_dir chưa nằm trong PATH" ;; esac
+    for c in sumi-store sumi-self; do [ -x "$self_dir/$c" ] && ok_ "$c" || fail_ "thiếu $self_dir/$c (chạy lại install.sh)"; done
+    # --- lib và hub ---
+    local libv hubv
+    libv="$(tr -d '[:space:]' <"$SUMI_HOME/lib/VERSION" 2>/dev/null || true)"
+    if [ -n "$libv" ]; then ok_ "lib $libv ($SUMI_HOME/lib)"; else fail_ "thiếu lib ($SUMI_HOME/lib/VERSION)"; fi
+    if [ -f "$SUMI_HOME/hub/shell.qml" ]; then
+        hubv="$(tr -d '[:space:]' <"$SUMI_HOME/hub/lib/VERSION" 2>/dev/null || true)"
+        if [ -z "$hubv" ]; then fail_ "hub thiếu lib vendored ($SUMI_HOME/hub/lib)"
+        elif [ -n "$libv" ] && [ "$hubv" != "$libv" ]; then warn_ "lib trong hub ($hubv) khác lib chung ($libv): chạy lại install.sh / install-dev.sh"
+        else ok_ "hub (lib $hubv)"; fi
+    else
+        warn_ "chưa có hub ($SUMI_HOME/hub)"
+    fi
+    # --- cấu hình ---
+    if [ -f "$CFG_DIR/colors.json" ]; then
+        if jq -e 'type == "object"' "$CFG_DIR/colors.json" >/dev/null 2>&1; then
+            local missing
+            missing="$(jq -r '[ "primary","on_primary","surface","on_surface","surface_variant","on_surface_variant","outline" ] - keys | join(", ")' "$CFG_DIR/colors.json" 2>/dev/null)"
+            if [ -z "$missing" ]; then ok_ "colors.json (đủ 7 màu)"; else warn_ "colors.json thiếu màu: $missing (màu thiếu dùng mặc định)"; fi
+        else fail_ "colors.json không phải JSON object hợp lệ"; fi
+    else
+        warn_ "chưa có colors.json (app dùng màu mặc định; muốn lấy màu từ Noctalia xem docs/CONVENTIONS.md)"
+    fi
+    if [ -f "$CFG_DIR/config.json" ]; then
+        if ! jq -e 'type == "object"' "$CFG_DIR/config.json" >/dev/null 2>&1; then fail_ "config.json hỏng (không phải JSON object): app sẽ dùng mặc định; khôi phục: sumi config backups"
+        elif [ "$(jq -r '.version // empty' "$CFG_DIR/config.json")" != 1 ]; then warn_ "config.json có version khác 1: app có thể bỏ qua"
+        else ok_ "config.json ($(jq -r '[.apps // {} | keys[]] | length' "$CFG_DIR/config.json") app có cấu hình riêng)"; fi
+    else
+        ok_ "chưa có config.json (app dùng mặc định)"
+    fi
+    if [ -f "$CFG_DIR/installed.json" ]; then
+        jq -e 'type == "object" and .version == 1 and (.apps | type == "object")' "$CFG_DIR/installed.json" >/dev/null 2>&1 && ok_ "installed.json" || fail_ "installed.json hỏng (sumi store sẽ từ chối): sửa hoặc xoá $CFG_DIR/installed.json"
+    fi
+    # --- app ---
+    local d id req av n=0
     for d in "$SUMI_HOME"/apps/*/; do
-        [ -f "${d}manifest.json" ] || continue
-        echo "app   $(manifest_field "${d%/}" '.id') $(manifest_field "${d%/}" '.version') ($(manifest_field "${d%/}" '.kind')) lib=$(cat "${d}lib/VERSION" 2>/dev/null || echo THIẾU) cần $(manifest_field "${d%/}" '.requires_lib')"
+        [ -d "$d" ] || continue
+        d="${d%/}"; id="$(basename "$d")"; n=$((n + 1))
+        if [ ! -f "$d/manifest.json" ] || ! jq -e 'type == "object" and .id and .version and .kind and .run' "$d/manifest.json" >/dev/null 2>&1; then fail_ "app $id: manifest.json thiếu hoặc không hợp lệ"; continue; fi
+        if [ "$(jq -r .id "$d/manifest.json")" != "$id" ]; then fail_ "app $id: manifest ghi id '$(jq -r .id "$d/manifest.json")' khác tên thư mục"; continue; fi
+        for v in View.qml shell.qml; do [ -f "$d/$v" ] || fail_ "app $id: thiếu $v"; done
+        av="$(tr -d '[:space:]' <"$d/lib/VERSION" 2>/dev/null || true)"
+        req="$(jq -r '.requires_lib // ""' "$d/manifest.json")"
+        if [ -z "$av" ]; then fail_ "app $id: thiếu lib vendored ($d/lib): chạy lại install.sh / install-dev.sh"
+        elif [ -n "$req" ] && ! lib_ok "$av" "$req"; then fail_ "app $id: cần lib '$req' nhưng lib trong app là $av: cập nhật app (sumi store) hoặc lõi"
+        else ok_ "app $id $(jq -r .version "$d/manifest.json") ($(jq -r .kind "$d/manifest.json")) lib $av"; fi
     done
-    [ "$ok" -eq 1 ]
+    [ "$n" -gt 0 ] || ok_ "chưa cài app nào (G trong hub để mở cửa hàng)"
+    # --- rác và sao lưu ---
+    local stale
+    stale="$(find "$SUMI_HOME/.staging" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
+    [ "$stale" -eq 0 ] && ok_ "không có thư mục tạm cũ" || warn_ "$stale thư mục tạm trong $SUMI_HOME/.staging (thao tác bị ngắt?); xoá được nếu không có lệnh sumi nào đang chạy"
+    local nb; nb="$(find "$CFG_DIR/backups" -mindepth 1 -maxdepth 2 2>/dev/null | wc -l)"
+    ok_ "sao lưu: $nb mục trong $CFG_DIR/backups"
+    echo "---"
+    echo "$fails lỗi, $warns cảnh báo"
+    [ "$fails" -eq 0 ]
 }
+
+lib_ok() {  # lib_ok <version> <range>: thoả requires_lib không
+    local v="$1" range="$2" c op n vn rn
+    vn="$(vnum "$v")"
+    for c in $range; do
+        op="${c%%[0-9]*}"; n="${c#"$op"}"; rn="$(vnum "$n")"
+        [ -n "$op" ] || op="="
+        case "$op" in
+            ">=") [ "$vn" -ge "$rn" ] ;;  ">") [ "$vn" -gt "$rn" ] ;;
+            "<=") [ "$vn" -le "$rn" ] ;;  "<") [ "$vn" -lt "$rn" ] ;;
+            "=") [ "$vn" -eq "$rn" ] ;;   *) return 1 ;;
+        esac || return 1
+    done
+    return 0
+}
+vnum() { local IFS=.; set -- $1; echo $(( 10#${1:-0} * 1000000 + 10#${2:-0} * 1000 + 10#${3:-0} )); }
 
 cmd_app() {
     local app="$1"; shift
