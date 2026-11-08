@@ -5,6 +5,8 @@ set -e
 D="$(cd "$(dirname "$0")" && pwd)"; R="$D/../.."; A="$R/.."
 bash "$D/store.test.sh" | tail -2
 bash "$D/safeclose.test.sh" | tail -2
+KAKUNIN_DIR="$A/sumi-kakunin" bash "$D/kakunin-script.test.sh" | tail -2
+node "$D/kakunin-auto.test.js" "$A/sumi-kakunin/shell.qml"
 bash "$D/self.test.sh" | tail -2
 bash "$D/newapp.test.sh" | tail -2
 bash "$D/release.test.sh" | tail -2
