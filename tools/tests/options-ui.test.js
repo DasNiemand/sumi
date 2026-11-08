@@ -16,11 +16,11 @@ const JO = JSON.parse(fs.readFileSync(process.argv[4], 'utf8')).options;
 let f = 0, n = 0;
 const eq = (a, b, m) => { n++; if (JSON.stringify(a) !== JSON.stringify(b)) { console.log('FAIL', m, '\n   got ', JSON.stringify(a), '\n   want', JSON.stringify(b)); f++; } };
 const QT = { Key_Escape: 1, Key_Return: 2, Key_Enter: 3, Key_Backspace: 4, ControlModifier: 16, AltModifier: 8, MetaModifier: 4096 };
-const fnNames = ['setOpt', 'moveOptRow', 'nudgeOpt', 'enterOpt', 'optEditKey', 'resetOptRow', 'resetOptAll', 'applyOptions', 'optShown'];
+const fnNames = ['setOpt', 'moveOptRow', 'nudgeOpt', 'enterOpt', 'optEditKey', 'resetOptRow', 'resetOptAll', 'applyCurrent', 'mergeOpts', 'optShown'];
 const mk = (cfgData) => {
-  const R = { ce, Qt: QT, page: 'options', optDraft: {}, optSel: 0, optEditing: false, optBuf: '', optMsg: '', applyMsg: '', applyErr: '', applyOk: false, hasScope: true, scopeId: 'jigen', optList: JO,
+  const R = { ce, Qt: QT, page: 'options', optDraft: {}, optSel: 0, optEditing: false, optBuf: '', optMsg: '', applyMsg: '', applyErr: '', applyOk: false, hasScope: true, scopeId: 'jigen', optList: JO, objOptList: [], plainOptList: JO, dirty: false, blocked: false, fontDirty: false, keyDirty: false, fontRows: [], kbList: [], applyProc: { running: false },
     cfg: { data: cfgData || { version: 1, global: {}, apps: {} } }, committed: null, failed: [] };
-  Object.defineProperty(R, 'optStored', { get() { return R.page === 'objects' ? ce.objectsOf(R.cfg.data, R.scopeId, R.optList) : ce.optionsOf(R.cfg.data, R.scopeId, R.optList); } });
+  Object.defineProperty(R, 'optStored', { get() { return R.mergeOpts(ce.objectsOf(R.cfg.data, R.scopeId, R.objOptList), R.scopeId === 'hub' ? ce.hubOptionsOf(R.cfg.data) : ce.optionsOf(R.cfg.data, R.scopeId, R.plainOptList)); } });
   Object.defineProperty(R, 'optDirty', { get() { return !ce.sameOptions(R.optDraft, R.optStored); } });
   Object.defineProperty(R, 'curOpt', { get() { return R.optList.length > 0 && R.optSel >= 0 && R.optSel < R.optList.length ? R.optList[R.optSel] : null; } });
   R.fail = (m, e) => { R.failed.push([m, e || '']); };
@@ -69,35 +69,46 @@ R.optSel = 1; R.enterOpt(); eq(R.optDraft, { e: 'b' }, 'enum đổi'); eq(R.optE
 const LK = { key: 'l', type: 'int', default: 5, min: 1, max: 9, label: 'L', locked: true };
 R = mk(); R.optList = [LK]; R.nudgeOpt(1); eq([R.optDraft, R.optMsg], [{}, 'LOCKED'], 'nudge khoá'); R.enterOpt(); eq([R.optEditing, R.optMsg.startsWith('LOCKED')], [false, true], 'enter khoá'); R.resetOptRow(); eq(R.optDraft, {}, 'reset khoá không làm gì');
 // apply
-R = mk(); R.applyOptions(); eq([R.failed, R.committed], [[['NO CHANGES', '']], null], 'apply không đổi gì');
-sel(R, 'timer.defaultMinutes'); R.nudgeOpt(1); R.applyOptions();
+R = mk(); R.applyCurrent(); eq([R.failed, R.committed], [[['NO CHANGES', '']], null], 'apply không đổi gì');
+sel(R, 'timer.defaultMinutes'); R.nudgeOpt(1); R.applyCurrent();
 eq([R.failed.length, R.committed.apps.jigen.options], [1, { 'timer.defaultMinutes': 40 }], 'apply ghi config');
-R = mk(); R.hasScope = false; R.applyOptions(); eq(R.failed[0][0], 'REJECTED', 'không có scope');
-R = mk(); R.optDraft = { bogus: 1 }; R.applyOptions(); eq([R.failed[0][0], R.failed[0][1], R.committed], ['REJECTED', 'option lạ: bogus', null], 'draft bẩn bị validate chặn');
+R = mk(); R.optList = []; R.plainOptList = []; R.applyCurrent(); eq(R.failed[0][0], 'NO CHANGES', 'không có option nào thì không có gì để ghi');
+R = mk(); R.optDraft = { bogus: 1 }; R.applyCurrent(); eq([R.failed[0][0], R.failed[0][1], R.committed], ['REJECTED', 'option lạ: bogus', null], 'draft bẩn bị validate chặn');
 // config đã lưu: optStored khớp thì không dirty
 R = mk({ version: 1, global: {}, apps: { jigen: { options: { 'timer.defaultMinutes': 45 } } } });
 R.optDraft = ce.optionsOf(R.cfg.data, 'jigen', JO); eq(R.optDirty, false, 'nạp từ config -> sạch'); sel(R, 'timer.defaultMinutes'); R.nudgeOpt(1); eq(R.optDirty, true, 'sửa -> dirty');
 // apply giữ key khác trong config
-R.applyOptions(); eq(R.committed.apps.jigen.options, { 'timer.defaultMinutes': 55 }, 'apply sửa đúng giá trị');
+R.applyCurrent(); eq(R.committed.apps.jigen.options, { 'timer.defaultMinutes': 55 }, 'apply sửa đúng giá trị');
 
 
-// ---- trang OBJECTS dùng chung máy trạng thái ----
+// ---- OBJECTS nằm chung danh sách với OPTIONS ----
 {
   const jm = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
   const OO = ce.objectOptsOf(jm);
   const R2 = mk({ version: 1, global: {}, apps: { jigen: { objects: { shutdown: { grid: 50 } } } } });
-  R2.optList = OO; R2.page = 'objects';
-  R2.optDraft = ce.objectsOf(R2.cfg.data, 'jigen', OO);
-  R2.optSel = 0; R2.enterOpt(); eq(R2.optDraft, { 'shutdown.id': 'torus' }, 'Enter trên hàng enum đổi object (globe -> torus)');
+  R2.objOptList = OO; R2.plainOptList = JO; R2.optList = OO.concat(JO);
+  R2.optDraft = R2.optStored;
+  eq(R2.optDraft, {}, 'grid không sửa được trong hub nên không nằm trong draft (nhưng được giữ khi ghi, xem bên dưới)');
+  R2.optSel = 0; R2.enterOpt(); eq(R2.optDraft['shutdown.id'], 'torus', 'Enter trên hàng enum đổi object (globe -> torus)');
   R2.nudgeOpt(1); eq(R2.optDraft['shutdown.id'], 'hourglass', 'D tiếp'); R2.nudgeOpt(1); eq('shutdown.id' in R2.optDraft, false, 'vòng về mặc định thì xoá khỏi draft');
   R2.optSel = 1; R2.nudgeOpt(1); R2.nudgeOpt(1); eq(R2.optDraft['shutdown.speed'], 1.2, 'speed +0.1 mỗi nấc');
   R2.optSel = 2; R2.enterOpt(); eq(R2.optDraft['shutdown.interactive'], false, 'bool tắt');
-  // apply gọi withObjects (giữ grid), không gọi withOptions
-  const src = grabH('applyOptions');
-  const ap = new Function('R', `with (R) {\n${src}\nreturn applyOptions;\n}`)(R2);
-  ap();
+  // một lần Apply ghi cả objects lẫn options, đúng chỗ, giữ grid
+  sel(R2, 'timer.defaultMinutes'); R2.nudgeOpt(1);
+  R2.applyCurrent();
   eq(R2.committed.apps.jigen.objects.shutdown, { grid: 50, speed: 1.2, interactive: false }, 'apply ghi objects và giữ grid');
-  eq(R2.committed.apps.jigen.options, undefined, 'apply trang objects không ghi options');
+  eq(R2.committed.apps.jigen.options, { 'timer.defaultMinutes': 40 }, 'cùng lần apply ghi options, không lẫn khoá object');
+  eq(Object.keys(R2.committed.apps.jigen.options).some(k => k.startsWith('shutdown.')), false, 'khoá object không rò vào options');
+  // chỉ sửa options thì objects giữ nguyên
+  const R3 = mk({ version: 1, global: {}, apps: { jigen: { objects: { reboot: { id: 'globe' } } } } });
+  R3.objOptList = OO; R3.plainOptList = JO; R3.optList = OO.concat(JO); R3.optDraft = R3.optStored;
+  sel(R3, 'timer.defaultMinutes'); R3.nudgeOpt(1); R3.applyCurrent();
+  eq([R3.committed.apps.jigen.objects, R3.committed.apps.jigen.options], [{ reboot: { id: 'globe' } }, { 'timer.defaultMinutes': 40 }], 'sửa option không đụng objects đã lưu');
+  // HUB: option của hub ghi vào config.hub
+  const R4 = mk({ version: 1, global: {}, apps: {} });
+  R4.scopeId = 'hub'; R4.objOptList = []; R4.plainOptList = ce.hubOptsList(); R4.optList = R4.plainOptList; R4.optDraft = R4.optStored;
+  sel(R4, 'maxBackups'); R4.nudgeOpt(1); R4.applyCurrent();
+  eq(R4.committed.hub, { maxBackups: 21 }, 'scope HUB ghi vào config.hub');
 }
 console.log(f === 0 ? `TAT CA OK (${n} kiem tra, options-ui)` : `${f}/${n} LOI`);
 process.exit(f ? 1 : 0);

@@ -20,7 +20,7 @@ docs/            hợp đồng (schema, CONVENTIONS, APP_API, OBJECT_API)
 examples/        manifest, index, config mẫu
 tools/           validate.py, tests/ (chạy: bash tools/tests/run.sh)
 lib/             SumiTheme, SumiColors, SumiConfig, SumiConfigEdit, SumiStoreLogic, SumiKeyMap, ScrambleText
-hub/             hub: launcher, settings (theme/font/keys/options/objects, preview, auto-revert), store (phím G)
+hub/             hub: toàn màn hình; dashboard APPS, settings gộp theo phạm vi (theme/font/keys/options+objects, preview luôn bật, auto-revert), store (phím G)
 bin/sumi         sumi <app> [function] | hub | list | reset | config | store | version | update | uninstall | doctor
 bin/sumi-store   backend của store (registry, inspect, install, update, remove, restore)
 bin/sumi-self    cập nhật / gỡ lõi (version, update, uninstall)

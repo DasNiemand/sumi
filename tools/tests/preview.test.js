@@ -40,13 +40,14 @@ const FNS = ['pvPick', 'pvFam', 'pvLook', 'pvApply'];
 
 function mk(o) {
   const R = Object.assign({
-    ce, page: 'apps', scopeId: 'global', scopeApp: null, apps: [], cur: null, fnSel: 0, curOpt: null, optDraft: {}, optList: [],
+    ce, page: 'apps', scopeId: 'global', scopeApp: null, apps: [], cur: null, fnSel: 0, curOpt: null, optDraft: {}, optList: [], objOptList: [],
     effTheme: 'paper', effTint: 0.12, effInk: 1.5, fontDraft: { title: null, label: null, data: null, numeral: null, kanji: null },
     fontInh: { title: '', label: '', data: '', numeral: '', kanji: '' },
     cfg: { data: { version: 1, global: {}, apps: {} } },
     colors: { adapter: { surface: '#101213', on_surface: '#c3c3c4', outline: '#59636e', primary: '#717878' } },
     Qt: { application: { font: { family: 'SysFont' } } }, pvLoader: { item: null }
   }, o || {});
+  Object.defineProperty(R, 'inSettings', { get() { return ['theme', 'font', 'keys', 'options'].includes(R.page); }, configurable: true });
   R.fontEff = (role) => R.fontDraft[role] !== null ? R.fontDraft[role] : R.fontInh[role];
   for (const p of PROPS) Object.defineProperty(R, p, { get() { return new Function('R', `with (R) { return ${propExpr(p)}; }`)(R); }, configurable: true });
   const src = FNS.map(fnSrc).join('\n');
@@ -69,16 +70,16 @@ R = mk({ page: 'options', scopeId: 'hub', cur: JIGEN, apps: [JIGEN] }); eq(R.pvA
 R = mk({ page: 'theme', scopeId: 'global', cur: KAK, apps: [JIGEN, KAK] }); eq(R.pvApp.id, 'kakunin', 'scope GLOBAL: app đang chọn');
 R = mk({ page: 'theme', scopeId: 'global', cur: null, apps: [JIGEN, KAK] }); eq(R.pvApp.id, 'jigen', 'scope GLOBAL không có app chọn: app đầu');
 R = mk({ page: 'font', scopeId: 'jigen', scopeApp: JIGEN, cur: KAK, apps: [JIGEN, KAK], fnSel: 2 }); eq([R.pvApp.id, R.pvFn], ['jigen', 'shutdown'], 'scope app: app của scope, function đầu (fnSel chỉ áp dụng ở trang APPS)');
-R = mk({ page: 'objects', scopeId: 'jigen', scopeApp: JIGEN, cur: JIGEN, apps: [JIGEN], optList: OO, curOpt: OO[4] });
-eq([R.pvFn, R.pvMode], ['reboot', 'reboot'], 'tab OBJECTS: function của hàng đang chọn');
+R = mk({ page: 'options', scopeId: 'jigen', scopeApp: JIGEN, cur: JIGEN, apps: [JIGEN], optList: OO, objOptList: OO, curOpt: OO[4] });
+eq([R.pvFn, R.pvMode], ['reboot', 'reboot'], 'section OPTIONS: function của hàng đang chọn');
 R.curOpt = OO[8]; eq([R.pvFn, R.pvMode], ['timer', 'shutdown30'], 'hàng timer.*');
 
 // ---- object cfg: bản nháp ở tab OBJECTS, bản lưu ở nơi khác ----
 const saved = { version: 1, global: {}, apps: { jigen: { objects: { shutdown: { id: 'torus' } } } } };
 R = mk({ page: 'apps', scopeId: 'jigen', scopeApp: JIGEN, cur: JIGEN, apps: [JIGEN], optList: OO, optDraft: { 'reboot.speed': 3 }, cfg: { data: saved } });
-eq(R.pvObjectCfg, { shutdown: { id: 'torus' } }, 'ngoài tab OBJECTS dùng config đã lưu (bỏ qua bản nháp)');
-R = mk({ page: 'objects', scopeId: 'jigen', scopeApp: JIGEN, cur: JIGEN, apps: [JIGEN], optList: OO, curOpt: OO[0], optDraft: { 'reboot.speed': 3 }, cfg: { data: saved } });
-eq(R.pvObjectCfg, { reboot: { speed: 3 } }, 'tab OBJECTS: dùng bản nháp (nháp thay thế phần đã lưu của function nằm trong danh sách)');
+eq(R.pvObjectCfg, { shutdown: { id: 'torus' } }, 'ngoài màn hình cài đặt dùng config đã lưu (bỏ qua bản nháp)');
+R = mk({ page: 'options', scopeId: 'jigen', scopeApp: JIGEN, cur: JIGEN, apps: [JIGEN], optList: OO, objOptList: OO, curOpt: OO[0], optDraft: { 'reboot.speed': 3 }, cfg: { data: saved } });
+eq(R.pvObjectCfg, { reboot: { speed: 3 } }, 'màn hình cài đặt: dùng bản nháp (nháp thay thế phần đã lưu của function nằm trong danh sách)');
 R = mk({ page: 'apps', cur: KAK, apps: [KAK] }); eq(R.pvObjectCfg, {}, 'app không có objects -> {}');
 
 // ---- theme: bản nháp áp dụng đúng phạm vi ----
@@ -91,7 +92,7 @@ eq(R.pvProps.preset, 'mono-white', 'sửa GLOBAL nhưng app có theme riêng: gi
 R = mk(Object.assign({}, base, { page: 'theme', scopeId: 'global', cur: KAK }));
 eq([R.pvProps.preset, R.pvProps.tint, R.pvProps.inkDarken], ['DRAFT', 0.3, 2], 'sửa GLOBAL, app không ghi đè: lấy nháp global');
 R = mk(Object.assign({}, base, { page: 'keys', scopeId: 'jigen', scopeApp: JIGEN }));
-eq(R.pvProps.preset, 'mono-white', 'tab khác: theme đã lưu của app');
+eq(R.pvProps.preset, 'DRAFT', 'mọi section của màn hình cài đặt đều thấy bản nháp theme (không còn tab riêng)');
 R = mk(Object.assign({}, base, { page: 'apps', cur: KAK }));
 eq(R.pvProps.preset, 'ink', 'trang APPS: kế thừa global');
 
@@ -103,7 +104,7 @@ eq([R.pvFam('label'), R.pvFam('data')], ['DraftLabel', 'JigenMono'], 'sửa font
 R = mk(Object.assign({}, fb, { page: 'font', scopeId: 'global', fontDraft: { title: 'DraftTitle', label: null, data: 'DraftData', numeral: null, kanji: null }, fontInh: { title: '', label: '', data: '', numeral: '', kanji: '' } }));
 eq([R.pvFam('title'), R.pvFam('data')], ['DraftTitle', 'JigenMono'], 'sửa font GLOBAL: app có font riêng thì giữ');
 R = mk(Object.assign({}, fb, { page: 'apps' }));
-eq([R.pvFam('title'), R.pvFam('data'), R.pvFam('label'), R.pvFam('kanji')], ['GlobalSans', 'JigenMono', 'sans-serif', 'SysFont'], 'ngoài tab FONT: font đã lưu, rơi về mặc định vai trò');
+eq([R.pvFam('title'), R.pvFam('data'), R.pvFam('label'), R.pvFam('kanji')], ['GlobalSans', 'JigenMono', 'sans-serif', 'SysFont'], 'ngoài màn hình cài đặt: font đã lưu, rơi về mặc định vai trò');
 
 // ---- pvProps: thứ tự, kiểu, mặc định ----
 R = mk({ cur: KAK, apps: [KAK] });
@@ -124,7 +125,12 @@ R.pvLoader = { item: null }; R.pvApply(); eq(true, true, 'item null không lỗi
 
 // ---- giao diện: sân khấu 1920x1080 và preview không bắt chuột ----
 eq([/id: pvStage\s+width: 1920; height: 1080/.test(hub), /scale: \(card\.pvW - 2\) \/ 1920/.test(hub), /MouseArea \{ anchors\.fill: parent; z: 3 \}/.test(hub)], [true, true, true], 'sân khấu + chặn chuột');
-eq(/pvReserve/.test(hub.slice(hub.indexOf('id: scopeList'), hub.indexOf('id: scopeList') + 400)) && /pvReserve/.test(hub.slice(hub.indexOf('id: list\n'), hub.indexOf('id: list\n') + 400)), true, 'danh sách co lại khi bật preview');
+eq([/pvReserve/.test(hub), /previewOn/.test(hub)], [false, false], 'preview luôn bật: không còn previewOn / pvReserve');
+// preview nằm đầu cột C ở dashboard lẫn màn hình cài đặt (x/y bám card.wA/wB/gg/gy/dashPvY); chỉ STORE không có preview
+const pvFrameHead = hub.slice(hub.indexOf('id: pvFrame'), hub.indexOf('id: pvFrame') + 500);
+eq([/visible: root\.page !== "store"/.test(pvFrameHead), /x: card\.gx \+ card\.wA \+ card\.wB \+ 2 \* card\.gg/.test(pvFrameHead), /y: card\.gy \+ card\.dashPvY/.test(pvFrameHead), /width: card\.pvW; height: card\.pvH/.test(pvFrameHead)], [true, true, true, true], 'pvFrame đặt vào cột C, ẩn ở STORE');
+eq(/readonly property real pvW: root\.page !== "store" \? Math\.min\(wC, /.test(hub), true, 'pvW có trần theo chiều cao');
+eq(/active: root\.page !== "store" && root\.pvApp !== null/.test(hub), true, 'Loader preview luôn active khi có app');
 
 console.log(f === 0 ? `TAT CA OK (${n} kiem tra, preview)` : `${f}/${n} LOI`);
 process.exit(f ? 1 : 0);

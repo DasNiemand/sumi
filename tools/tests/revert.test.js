@@ -11,7 +11,7 @@ const eq = (a, b, m) => { n++; if (JSON.stringify(a) !== JSON.stringify(b)) { co
 const QT = { Key_Return: 2, Key_Enter: 3, Key_Space: 4, Key_Escape: 1, Key_Backspace: 5, Key_Delete: 6, Key_A: 7 };
 const FN = ['revertArmed', 'applyDone', 'revertTick', 'keepConfig', 'doRevert', 'revertKey', 'dismiss', 'commitConfig', 'fail', 'finish'];
 const mk = (data, o) => {
-  const R = Object.assign({ ce, Qt: QT, page: 'theme', scopeId: 'jigen', storeBusy: false, sumiBin: '/b/sumi',
+  const R = Object.assign({ ce, Qt: QT, page: 'theme', scopeId: 'jigen', optDirty: false, storeBusy: false, sumiBin: '/b/sumi',
     cfg: { data, text() { return JSON.stringify(data); } },
     applyProc: { running: false, command: [] }, applyMsg: '', applyErr: '', applyOk: false,
     applyKind: 'apply', revertPrev: '', revertArm: false, revertActive: false, revertLeft: 0, revertTotal: 0,
@@ -53,7 +53,8 @@ R = mk(cfgOn(10)); R.commitConfig({ version: 1, global: {} }); run(R); done(R, 0
 // e) apply lỗi: không đếm
 R = mk(cfgOn(10)); R.commitConfig({ version: 1, global: {} }); run(R); done(R, 3); eq([R.applyMsg, R.applyOk, R.revertActive, R.revertArm], ['FAILED (3)', false, false, false], 'apply lỗi -> không đếm ngược');
 // f) đổi chính cài đặt auto-revert (OPTIONS > HUB) thì không đếm
-R = mk(cfgOn(10), { page: 'options', scopeId: 'hub' }); R.commitConfig({ version: 1, global: {} }); run(R); done(R, 0); eq(R.revertActive, false, 'scope HUB trong OPTIONS không đếm');
+R = mk(cfgOn(10), { page: 'options', scopeId: 'hub', optDirty: true }); R.commitConfig({ version: 1, global: {} }); run(R); done(R, 0); eq(R.revertActive, false, 'scope HUB đang sửa OPTIONS (kể cả đang focus section khác) không đếm');
+R = mk(cfgOn(10), { page: 'theme', scopeId: 'hub', optDirty: false }); R.commitConfig({ version: 1, global: {} }); run(R); done(R, 0); eq(R.revertActive, true, 'scope HUB chỉ đổi theme vẫn đếm');
 R = mk(cfgOn(10), { page: 'options', scopeId: 'jigen' }); R.commitConfig({ version: 1, global: {} }); run(R); done(R, 0); eq(R.revertActive, true, 'OPTIONS của app vẫn đếm');
 // g) config chưa có: hoàn tác về bản hợp lệ tối thiểu
 R = mk({}); R.cfg.data = { hub: { autoRevert: true } }; R.commitConfig({ version: 1, global: {}, hub: { autoRevert: true } }); run(R); done(R, 0); R.revertKey({ key: QT.Key_Escape, isAutoRepeat: false });

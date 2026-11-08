@@ -14,7 +14,7 @@ description: Làm việc với hệ thống SUMI 墨 (hub + store + settings cho
 - Tên: hub **SUMI**, registry **sumi-index**, app **kakunin**, **jigen**. Cài app qua `git clone` từ GitHub của người dùng, **ghim tag + SHA commit**, không script post-install, không nguồn ngoài registry, không `curl | sh`.
 - Màu chỉ derive từ palette Noctalia qua `SumiTheme`, không hex tùy ý; `danger` cố định `#E63946`. Preset theme: `paper, ink, mono-white, mono-black, accent, follow`. Tương phản ink/paper: chặn Apply nếu < 4.5, cảnh báo nếu < 7.
 - Font theo 5 vai trò `title, label, data, numeral, kanji`.
-- Hub từ chối cập nhật/xóa/reset app đang chạy. Keybind chỉ là phím trong app, không sinh bind Hyprland. Mỗi lần chỉ một preview.
+- Hub từ chối cập nhật/xóa/reset app đang chạy. Keybind chỉ là phím trong app, không sinh bind Hyprland. Mỗi lần chỉ một preview, **luôn bật** (không có phím bật/tắt).
 - Ngoài phạm vi: hex tùy ý, post-install, thay launcher hệ thống, nhiều preview cùng lúc.
 
 ## Làm app mới
@@ -46,5 +46,5 @@ description: Làm việc với hệ thống SUMI 墨 (hub + store + settings cho
 - [ ] `python3 tools/validate.py all` và `bash tools/tests/run.sh` đều xanh.
 - [ ] `pyside6-qmllint` không có `Error`/lỗi cú pháp trên mọi QML mới.
 - [ ] Manifest mới qua `sumi-store inspect` (không `warnings` bất thường) khi đặt vào repo git giả.
-- [ ] Hub (nếu đổi): preview, auto-revert, tab liên quan vẫn có test; phím mới không trùng phím cũ; footer không dài quá ~100 ký tự.
+- [ ] Hub (nếu đổi): preview, auto-revert, màn hình cài đặt gộp (section/hàng/apply) vẫn có test; phím mới không trùng phím cũ; footer không dài quá ~100 ký tự.
 - [ ] Tài liệu (`docs/CONVENTIONS.md`) và `README` cập nhật; version của app/lõi được tăng đúng; nhắc người dùng commit, tag annotated, ghim index.

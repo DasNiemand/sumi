@@ -17,6 +17,8 @@ node "$D/options-ui.test.js" "$R/lib/SumiConfigEdit.qml" "$R/hub/shell.qml" "$A/
 node "$D/store-ui.test.js" "$R/lib/SumiStoreLogic.qml" "$R/hub/shell.qml"
 node "$D/jigen-objects.test.js" "$A/sumi-jigen"
 node "$D/preview.test.js" "$R/lib/SumiConfigEdit.qml" "$R/hub/shell.qml"
+node "$D/dashboard.test.js" "$R/lib/SumiConfigEdit.qml" "$R/lib/SumiStoreLogic.qml" "$R/hub/shell.qml"
+node "$D/settings.test.js" "$R/lib/SumiConfigEdit.qml" "$R/hub/shell.qml" "$A/sumi-jigen/manifest.json" "$A/sumi-kakunin/manifest.json"
 node "$D/revert.test.js" "$R/lib/SumiConfigEdit.qml" "$R/hub/shell.qml"
 node "$D/crt.test.js" "$R/hub/shell.qml"
 node "$D/shape.test.js" "$R/hub" "$R/templates" "$A/sumi-jigen" "$A/sumi-kakunin"

@@ -83,6 +83,7 @@ Validate trước khi rename vào `apps/`:
 ## 9. Hub
 - Hub **không phải app**: không có manifest, nằm ở `~/.local/share/sumi/hub/` và cũng giữ bản lib vendored riêng (`hub/lib/`).
 - Mở bằng `sumi hub` (chọn màn hình đang focus qua `hyprctl`, truyền cho hub bằng biến `SUMI_MONITOR`; đã mở thì không mở thêm).
+- **Bố cục hub (từ 1.1)**: cửa sổ layer-shell phủ **toàn màn hình** (`card` = `anchors.fill: parent`, `u = min(w/1920, h/1080) * 1.15`), giấy + khung mảnh 1 px thụt 14, vát góc dưới phải; CRT bật/tắt thu cả màn hình. Trang APPS là dashboard 3 cột (A 22% / B 48% / C 30%): A = danh sách app, REGISTRY, LOG (6 dòng cuối `/tmp/sumi.log`); B = tên + kanji, DETAILS, FUNCTIONS (A/D, hiện object đang dùng), KEYBINDS hiệu lực, thanh RUN; C = PREVIEW (V), SYSTEM (MEM/BAT/TEMP/LOAD/UPTIME thật, làm mới 2 s chỉ khi ở trang APPS), SHORTCUTS bấm chuột được. Settings là **một màn hình gộp** theo phạm vi (xem mục 11); STORE giữ bố cục cũ trên vùng toàn màn hình. Số liệu SYSTEM/LOG chỉ lấy từ `sysProc` (không bịa); thêm panel mới thì lấy dữ liệu qua `Process` + `SplitParser`, không dựng số liệu giả.
 - Hub lấy dữ liệu từ `sumi list --json`: mảng các `{id, name, kanji, description, version, kind, running, dir, functions:[{id, label, ipc_name}], keybinds:[{action, default, label, locked}], fonts:[...]}`. `fonts` là `manifest.fonts` nguyên văn (mảng tên vai trò); rỗng hoặc không nhận ra thì hub coi app dùng cả 5 vai trò.
   `running` = có tiến trình `-p <dir>/shell.qml`. Manifest hỏng thì app đó bị bỏ qua, không làm hỏng cả danh sách.
 - Hub chạy app bằng `Quickshell.execDetached([sumi, id, function])` rồi tự đóng để app nhận focus bàn phím.
@@ -93,8 +94,10 @@ Validate trước khi rename vào `apps/`:
 - App khai báo `requires_lib`. Hub từ chối chạy app không khớp và báo `[INCOMPATIBLE]`.
 
 ## 11. Cài đặt trong hub (GĐ2b)
-- Ba tab: THEME, FONT, KEYS (Tab / Shift+Tab / phím 1-3). Phạm vi: THEME = global, hub, các app; FONT = global và các app; KEYS = chỉ app có `keybinds`. Phạm vi chọn gần nhất được giữ khi đổi tab.
-- Mỗi tab có bản nháp riêng theo phạm vi; đổi phạm vi thì bỏ bản nháp chưa áp dụng. Dấu `*` trên tab = có thay đổi chưa áp dụng.
+- **Một màn hình cho mỗi phạm vi** (từ 1.1; không còn tab/trang riêng): cột trái chọn phạm vi (`GLOBAL`, `HUB`, rồi từng app; `Q/E` hoặc chuột), cột giữa là danh sách hàng chia section **THEME** (6 preset, TINT, INK DARKEN) / **FONT** (5 vai trò) / **KEYS** / **OPTIONS** (gồm OBJECTS của từng function, rồi option khai trong manifest), cột phải là PREVIEW luôn bật + DETAIL của hàng đang chọn.
+- Section nào không áp dụng cho phạm vi thì ẩn: GLOBAL = THEME + FONT; HUB = THEME (chỉ preset; tint/ink theo GLOBAL) + OPTIONS của hub; app = đủ 4 (KEYS chỉ khi app có `keybinds`, OPTIONS chỉ khi có option hoặc objects).
+- Phím: `W/S` đi hàng (hết section thì sang section kế, vòng tròn), `A/D` chỉnh hàng (preset, tint ±0.02, ink ±0.1, option/object một nấc), `Enter` sửa (mở bộ chọn font, gán phím, ô nhập option), `Tab/Shift+Tab` hoặc `1..4` nhảy section, `Space` **áp dụng tất cả section đang có nháp trong MỘT lần ghi config**, `R` về mặc định hàng, `X` về mặc định cả section, `Esc` về. Từ trang APPS: `Tab`/`T` (theme), `F`, `K`, `O`/`J` (options) mở cài đặt của app đang chọn và focus đúng section.
+- Một bản nháp chung cho cả phạm vi; đổi phạm vi thì bỏ nháp chưa áp dụng. Nháp mọi section được phản ánh ngay trong preview. Theme tương phản < 4.5 hoặc bất kỳ section nào không hợp lệ thì **không ghi gì cả**.
 - Mọi thay đổi đều ghi qua `sumi config apply` (xem mục 2), không bao giờ ghi trực tiếp. Config hiện có mà đọc không ra JSON thì hub từ chối ghi.
 - App oneshot (kakunin) đọc config mỗi lần chạy. App daemon (jigen) chỉ nhận giao diện, font, phím mới ở lần mở overlay kế tiếp sau khi reload.
 
@@ -126,7 +129,7 @@ Hub gọi với `--json`; mỗi lệnh in đúng một đối tượng/mảng JS
 ## 10. Tab OPTIONS và `protectedClasses` (GĐ2b-3)
 - **Kiểu option** (`manifest.options[].type`): `bool`, `int`, `float`, `enum`, `intlist` (1..16 số nguyên, mỗi số trong `[min,max]`), `string` (0..64 ký tự, không ký tự điều khiển), `stringlist` (0..32 chuỗi, mỗi chuỗi 1..64 ký tự gồm chữ, số và `_ . * ? -`; dùng cho glob class cửa sổ). `locked: true` thì hub không cho đổi.
 - **Lưu**: `config.apps.<id>.options = { "<key>": giá trị }`, chỉ ghi phần **khác mặc định**; bằng mặc định thì xoá key. Key option lạ (app khác phiên bản) được giữ nguyên khi ghi. Giá trị sai kiểu/ngoài khoảng bị bỏ qua khi đọc và app dùng mặc định.
-- **Hub, tab 4 OPTIONS** (hoặc `O` ở trang APPS): `W/S` chọn hàng, `A/D` chỉnh một nấc (bool/enum đổi giá trị; int bước ≈ khoảng/20 làm tròn lũy thừa 10; float bước ≈ khoảng/50, tối thiểu 0.01), `Enter` sửa (bool/enum đổi giá trị, còn lại mở ô nhập: `Enter` lưu nháp, `Esc` huỷ, giá trị sai thì ở lại ô nhập và báo lỗi), `R` về mặc định hàng, `X` về mặc định hết, `Space` apply (cùng luồng validate, backup, ghi atomic như các tab khác). Danh sách app lấy từ `sumi list --json` (trường `options`).
+- **Hub, section OPTIONS** (hoặc `O` ở trang APPS): `W/S` chọn hàng, `A/D` chỉnh một nấc (bool/enum đổi giá trị; int bước ≈ khoảng/20 làm tròn lũy thừa 10; float bước ≈ khoảng/50, tối thiểu 0.01), `Enter` sửa (bool/enum đổi giá trị, còn lại mở ô nhập: `Enter` lưu nháp, `Esc` huỷ, giá trị sai thì ở lại ô nhập và báo lỗi), `R` về mặc định hàng, `X` về mặc định hết, `Space` apply (cùng luồng validate, backup, ghi atomic như các tab khác). Danh sách app lấy từ `sumi list --json` (trường `options`).
 - **Cảnh báo chéo** (không chặn): `timer.defaultMinutes` không nằm trong `timer.presets` thì viền đỏ ở hàng defaultMinutes (khớp luật của `tools/validate.py`).
 - **`protectedClasses`** (kakunin, `stringlist`, mặc định `["zen*","Minecraft*"]`): danh sách glob class cửa sổ mà `contrib/safe-close.sh` phải hỏi kakunin trước khi đóng. Script đọc `apps.kakunin.options.protectedClasses` bằng `jq` mỗi lần chạy:
   - chưa đặt / thiếu file / JSON hỏng / sai kiểu → dùng mặc định;
@@ -134,25 +137,25 @@ Hub gọi với `--json`; mỗi lệnh in đúng một đối tượng/mảng JS
   - mục sai định dạng bị bỏ qua (không bao giờ được diễn giải thành lệnh).
   - Chốt chặn một dialog: `pgrep -f -- '-p [^ ]*/apps/kakunin/shell\.qml'` (khớp cả `qs -p` lẫn `quickshell -p`).
 
-## 11. Tab OBJECTS (GĐ2b-4)
-- Phím `5` trong settings hoặc `J` ở trang APPS. Danh sách app lấy những app có function khai `objects` (từ `sumi list --json`: `functions[].objects`, `functions[].defaultObject`). Hub dùng lại giao diện và phím của tab OPTIONS với danh sách option "ảo" sinh từ manifest (`SumiConfigEdit.objectOptsOf`): khoá `<function>.id|speed|interactive`.
+## 11. OBJECTS (GĐ2b-4; từ 1.1 nằm chung section OPTIONS)
+- `J` ở trang APPS (= mở OPTIONS). OBJECTS hiện ở đầu section OPTIONS của app, trước option khai trong manifest; ghi vào `apps.<id>.objects`, còn option ghi vào `apps.<id>.options` (một lần Apply tách đúng chỗ, giữ nguyên `grid`). Danh sách app lấy những app có function khai `objects` (từ `sumi list --json`: `functions[].objects`, `functions[].defaultObject`). Hub dùng lại giao diện và phím của tab OPTIONS với danh sách option "ảo" sinh từ manifest (`SumiConfigEdit.objectOptsOf`): khoá `<function>.id|speed|interactive`.
 - Lưu: `config.apps.<id>.objects.<function> = {id, speed, interactive}`, chỉ phần khác mặc định (mặc định của id là `defaultObject`, `speed` là 1, `interactive` là true); function về mặc định hết thì entry bị xoá; `grid` và function lạ giữ nguyên.
 - Tài liệu object: `docs/OBJECT_API.md`.
 
 ## 12. Preview trong hub (GĐ2b-5)
-- Phím `V` (trang APPS và các tab settings) bật/tắt khung 16:9 ở góc dưới trái. Mặc định **tắt** (View có animation, giữ tắt cho nhẹ). Chỉ một preview một lúc; scope `HUB` và trang Store không có preview.
+- Preview **luôn bật** (không còn phím `V`): khung 16:9 ở đầu cột phải của dashboard và của màn hình cài đặt. Chỉ một preview một lúc; scope `HUB` và trang Store không có preview. Lưu ý: object dither của jigen luôn xoay nên preview tốn CPU một chút khi hub đang mở.
 - Hub nạp `Loader { source: "file://<dir>/View.qml" }` vào sân khấu 1920x1080 rồi thu nhỏ bằng `scale`, nên View (tính kích thước theo `min(w/1920, h/1080)`) trông giống hệt khi chạy thật. `import "lib"` trong View.qml trỏ tới lib đã vendored trong thư mục app (đây là lý do mọi app vendored lib).
 - Hub gán thuộc tính cho View **chỉ khi View có thuộc tính đó** (`typeof item[k] !== "undefined"`), theo thứ tự: `bootMs`, `outroMs`, màu (`bgColor`, `fgColor`, `mutedColor`, `accentColor`, `dangerColor`), font 5 vai trò, `preset`, `tint`, `inkDarken`, `scanOpacity`, `scanlinesEnabled`, `glitchEnabled`, `scaleBoost`, `previewMode`, `closing`, `mode`, `objectCfg`, dữ liệu mẫu (`appName`, `appTitle`, `appWs`, `userName`, `standby`, `managing`), cuối cùng `active: true`. View mới nên dùng đúng các tên này.
-- **Bản nháp được phản ánh ngay**: tab THEME (nháp của scope đang sửa; sửa GLOBAL thì app có ghi đè riêng giữ nguyên theme riêng), FONT (tương tự), OBJECTS (nháp object). Tab khác và trang APPS hiển thị cấu hình đã lưu.
-- `mode` lấy từ `functions[].ipc_name` (hoặc `id`) của function đang xem: trang APPS theo `A/D`, tab OBJECTS theo hàng đang chọn.
+- **Bản nháp được phản ánh ngay** ở màn hình cài đặt: theme (nháp của phạm vi đang sửa; sửa GLOBAL thì app có ghi đè riêng giữ nguyên theme riêng), font (tương tự), object. Trang APPS hiển thị cấu hình đã lưu.
+- `mode` lấy từ `functions[].ipc_name` (hoặc `id`) của function đang xem: trang APPS theo `A/D`, màn hình cài đặt theo hàng OPTIONS đang chọn (tiền tố `<function>.`).
 - Hợp đồng cho View: `previewMode: true` nghĩa là không nhận phím, không giữ focus, không Process/ghi file/thoát tiến trình (đã là quy tắc của View thuần); preview không nhận chuột.
 
 ## 13. Auto-revert và cài đặt HUB (GĐ2b-6)
-- **Cài đặt hub** nằm ở tab OPTIONS, scope **HUB** (luôn là scope đầu tiên), lưu ở `config.hub.<key>`, chỉ phần khác mặc định, giữ nguyên `hub.theme` và `hub.registryUrl`:
+- **Cài đặt hub** nằm ở section OPTIONS của phạm vi **HUB**, lưu ở `config.hub.<key>`, chỉ phần khác mặc định, giữ nguyên `hub.theme` và `hub.registryUrl`:
   `autoRevert` (bool, mặc định tắt), `autoRevertSec` (10/15/30, mặc định 15), `maxBackups` (5..100, mặc định 20; `sumi config` dùng để tỉa backup), `checkUpdateHours` (1..168, mặc định 6; `sumi store` dùng làm hạn cache registry).
 - **Auto-revert**: khi `autoRevert` bật, sau mỗi Apply thành công hub hiện thanh đếm ngược (`KEEP THIS SETTING?  REVERTING IN n s`). `Enter`/`Space` giữ; `Esc`/`Backspace`/`Delete`, hết giờ, hoặc **đóng hub** thì hoàn tác. Các phím khác bị chặn trong lúc đếm.
 - **Cách hoàn tác**: áp lại bản config ngay trước lần Apply đó (`revertSnapshot`: luôn có `version: 1` và `global`) qua chính `sumi config apply` (có backup như mọi lần ghi, kết quả hiện `REVERTED`). Không dựa vào stamp backup nên chạy cả khi trước đó chưa có config.json.
-- Không đếm ngược khi: Apply lỗi, hoặc đang sửa chính các cài đặt HUB (để bật/tắt auto-revert không tự hoàn tác chính nó).
+- Không đếm ngược khi: Apply lỗi, hoặc phạm vi HUB đang có nháp OPTIONS (để bật/tắt auto-revert không tự hoàn tác chính nó).
 - Lưu ý: hoàn tác chỉ trả lại file config; bản nháp trên màn hình giữ nguyên để bạn chỉnh tiếp.
 
 ## 14. Cài đặt, cập nhật, gỡ lõi (GĐ4a)

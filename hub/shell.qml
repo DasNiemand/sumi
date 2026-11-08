@@ -17,6 +17,7 @@ import "lib"
 //            phản ánh BẢN NHÁP theme/font/object đang sửa. Chỉ một preview một lúc. Hub (scope HUB) và Store không có preview.
 //   AUTO-REVERT: OPTIONS > scope HUB > AUTO-REVERT (tắt mặc định). Bật thì sau mỗi Apply có thanh đếm ngược 10/15/30 s: Enter giữ, Esc hoặc hết giờ
 //            hoặc đóng hub = hoàn tác (áp lại config trước đó qua `sumi config apply`). Các phím khác bị chặn trong lúc đếm.
+//   LAYOUT:  cửa sổ toàn màn hình; trang APPS là dashboard 3 cột (APPS/REGISTRY/LOG | chi tiết/FUNCTIONS/KEYBINDS/RUN | PREVIEW/SYSTEM/SHORTCUTS). Settings và STORE giữ bố cục cũ.
 //   CRT:     bật máy (đường kẻ -> mở ra) và tắt máy (thu lại) cho cửa sổ hub, scanline + thanh quét + glitch ở tiêu đề.
 //            OPTIONS > HUB: CRT BOOT MS / CRT OUTRO MS (0 = tắt hiệu ứng tương ứng); scanlines, scanlineOpacity, glitch lấy từ look (global).
 //   NOTICE:  mở hub thì chạy nền `sumi update --check` và `sumi store registry` (có cache); có bản mới thì hiện ở thanh trên trang APPS.
@@ -107,12 +108,119 @@ ShellRoot {
         finish()
     }
 
-    // ===== Trang cài đặt: THEME (2b-1), FONT + KEYS (2b-2) =====
-    property string page: "apps"            // apps | theme | font | keys
-    readonly property bool inSettings: page === "theme" || page === "font" || page === "keys" || page === "options" || page === "objects"
-    readonly property var tabIds: ["theme", "font", "keys", "options", "objects"]
+    // ===== DASHBOARD (trang APPS): dữ liệu dẫn xuất + số liệu hệ thống thật =====
+    // Tên hiển thị: manifest.name có thể kèm kanji ("JIGEN 時限"); kanji đã có ô riêng nên bỏ khỏi tiêu đề.
+    function titleOf(a) {
+        if (a === null || a === undefined) return ""
+        const n = String(a.name)
+        const k = typeof a.kanji === "string" ? a.kanji : ""
+        if (k !== "" && n.length > k.length && n.endsWith(k)) return n.slice(0, n.length - k.length).trim().toUpperCase()
+        return n.toUpperCase()
+    }
+    // Object đang dùng cho một function: config.apps.<id>.objects.<fn>.id nếu hợp lệ, không thì defaultObject.
+    function fnObjId(a, f) {
+        const objs = (f !== null && f !== undefined && Array.isArray(f.objects)) ? f.objects : []
+        const d = cfg.data
+        const ap = (d !== null && typeof d === "object" && d.apps !== null && typeof d.apps === "object" && a !== null && a !== undefined) ? d.apps[a.id] : null
+        const ob = (ap !== null && ap !== undefined && typeof ap === "object" && ap.objects !== null && typeof ap.objects === "object") ? ap.objects[f.id] : null
+        const v = (ob !== null && ob !== undefined && typeof ob === "object") ? ob.id : undefined
+        if (typeof v === "string" && objs.indexOf(v) >= 0) return v
+        if (f !== null && f !== undefined && typeof f.defaultObject === "string" && f.defaultObject !== "") return f.defaultObject
+        return objs.length > 0 ? objs[0] : "-"
+    }
+    readonly property int runningCount: {
+        let n = 0
+        for (let i = 0; i < apps.length; i++) if (apps[i].running === true) n++
+        return n
+    }
+    readonly property var curInfo: {
+        const a = cur
+        if (a === null) return []
+        const nopt = Array.isArray(a.options) ? a.options.length : 0
+        const nkey = Array.isArray(a.keybinds) ? a.keybinds.length : 0
+        return [
+            ["VERSION", "v" + a.version],
+            ["SOURCE", (a.source === "dev" || !a.source) ? "DEV (LOCAL)" : String(a.source)],
+            ["KIND", a.kind === "daemon" ? "DAEMON" : "ONESHOT"],
+            ["REF", a.ref ? String(a.ref) : "-"],
+            ["STATUS", a.running ? "RUNNING" : "IDLE"],
+            ["SHA", a.sha ? sl.short(a.sha) : "-"],
+            ["FUNCTIONS", String(curFns.length)],
+            ["OPTIONS / KEYS", nopt + " / " + nkey]
+        ]
+    }
+    // Phím hiệu lực của app đang chọn (mặc định, hoặc phần người dùng đã đổi ở tab KEYS).
+    readonly property var curKeys: {
+        const a = cur
+        if (a === null || !Array.isArray(a.keybinds)) return []
+        const ks = ce.keysOf(cfg.data, a.id)
+        return a.keybinds.map(k => ({ label: String(k.label).toUpperCase(), key: String(ce.keyEff(k, ks)) }))
+    }
+    readonly property string runLabel: {
+        if (cur === null) return ""
+        let s = "RUN   " + titleOf(cur)
+        if (cur.kind === "daemon" && curFns.length > 0) s += "  /  " + String(curFns[Math.max(0, Math.min(fnSel, curFns.length - 1))].label)
+        return s
+    }
+    // Phím tắt bằng chuột ở dashboard. Cùng điều kiện chặn như bàn phím: đang tắt máy / đếm ngược revert thì bỏ qua.
+    function dashAct(id) {
+        if (closing || revertActive || page !== "apps") return
+        if (id === "T" || id === "TAB") openSettings("theme")
+        else if (id === "F") openSettings("font")
+        else if (id === "K") openSettings("keys")
+        else if (id === "O") openSettings("options")
+        else if (id === "G") openStore()
+        else if (id === "ESC") dismiss()
+        else if (id === "RUN") runSelected()
+    }
+
+    property int sysUp: -1
+    property real sysMem: -1                // tỉ lệ đã dùng 0..1 (-1 = chưa có số liệu)
+    property string sysMemText: ""
+    property string sysLoad: ""
+    property int sysBat: -1
+    property string sysBatState: ""
+    property int sysTemp: -1                // °C, max các cảm biến (không gọi là CPU)
+    property var logLines: []
+    property var logBuf: []
+    // Mỗi dòng `khóa=giá trị` do sysProc in ra; `begin` mở lượt mới, `end` chốt lượt (log chỉ cập nhật khi đổi).
+    function sysLine(line) {
+        const i = line.indexOf("=")
+        if (i < 0) return
+        const k = line.slice(0, i)
+        const v = line.slice(i + 1)
+        if (k === "begin") logBuf = []
+        else if (k === "up") { const n = parseInt(v); sysUp = isNaN(n) ? -1 : n }
+        else if (k === "mem") {
+            const p = v.split(" ")
+            const t = parseInt(p[0])
+            const av = parseInt(p[1])
+            if (t > 0 && av >= 0 && av <= t) { sysMem = (t - av) / t; sysMemText = ((t - av) / 1048576).toFixed(1) + " / " + (t / 1048576).toFixed(1) + " GB" }
+        }
+        else if (k === "load") sysLoad = v
+        else if (k === "bat") { const p = v.split(" "); const n = parseInt(p[0]); sysBat = isNaN(n) ? -1 : Math.max(0, Math.min(100, n)); sysBatState = p.slice(1).join(" ") }
+        else if (k === "temp") { const n = parseInt(v); sysTemp = (isNaN(n) || n <= 0) ? -1 : Math.round(n / 1000) }
+        else if (k === "log") logBuf = logBuf.concat([v])
+        else if (k === "end") { if (JSON.stringify(logBuf) !== JSON.stringify(logLines)) logLines = logBuf.slice() }
+    }
+    function fmtUp(s) {
+        if (s < 0) return "-"
+        const d = Math.floor(s / 86400)
+        const h = Math.floor((s % 86400) / 3600)
+        const m = Math.floor((s % 3600) / 60)
+        return (d > 0 ? d + "d " : "") + (h < 10 ? "0" : "") + h + "h " + (m < 10 ? "0" : "") + m + "m"
+    }
+    property string nowText: ""
+    property string hexText: "0x0000 0000 0000"
+    function hex4() { return ("0000" + Math.floor(Math.random() * 65536).toString(16)).slice(-4).toUpperCase() }
+
+    // ===== Trang cài đặt: MỘT màn hình cho mỗi phạm vi (GLOBAL / HUB / từng app) gồm THEME + FONT + KEYS + OPTIONS (có OBJECTS) =====
+    // `page` là section đang focus (theme | font | keys | options); mọi section áp dụng cho phạm vi hiện tại hiện cùng lúc.
+    property string page: "apps"            // apps | store | theme | font | keys | options
+    readonly property var secIds: ["theme", "font", "keys", "options"]
+    readonly property bool inSettings: secIds.indexOf(page) >= 0
     property int scopeSel: 0
-    property string keepScope: "global"     // phạm vi người dùng chọn gần nhất; đổi tab thì dùng lại (trang không có thì lấy mục đầu)
+    property string keepScope: "global"     // phạm vi người dùng chọn gần nhất
     function appById(id) {
         for (let i = 0; i < apps.length; i++) if (apps[i].id === id) return apps[i]
         return null
@@ -120,21 +228,12 @@ ShellRoot {
     function hasKeybinds(a) { return a !== null && Array.isArray(a.keybinds) && a.keybinds.length > 0 }
     function hasOptions(a) { return a !== null && Array.isArray(a.options) && a.options.length > 0 }
     function hasObjects(a) { return a !== null && ce.objectOptsOf(a).length > 0 }
-    // THEME: global, hub, các app. FONT: global + các app (hub theo global). KEYS / OPTIONS: chỉ app có keybind / option.
-    function scopeListFor(p) {
-        const l = []
-        if (p === "theme") { l.push({ id: "global", name: "GLOBAL" }); l.push({ id: "hub", name: "HUB" }) }
-        else if (p === "font") l.push({ id: "global", name: "GLOBAL" })
-        else if (p === "options") l.push({ id: "hub", name: "HUB" })
-        for (let i = 0; i < apps.length; i++) {
-            if (p === "keys" && !hasKeybinds(apps[i])) continue
-            if (p === "options" && !hasOptions(apps[i])) continue
-            if (p === "objects" && !hasObjects(apps[i])) continue
-            l.push({ id: apps[i].id, name: String(apps[i].name).toUpperCase() })
-        }
+    // Phạm vi: GLOBAL, HUB, rồi mọi app. Section nào không áp dụng cho phạm vi thì ẩn (secCount = 0).
+    readonly property var scopes: {
+        const l = [{ id: "global", name: "GLOBAL" }, { id: "hub", name: "HUB" }]
+        for (let i = 0; i < apps.length; i++) l.push({ id: apps[i].id, name: String(apps[i].name).toUpperCase() })
         return l
     }
-    readonly property var scopes: scopeListFor(page)
     readonly property bool hasScope: scopes.length > 0
     readonly property string scopeId: hasScope ? scopes[Math.max(0, Math.min(scopeSel, scopes.length - 1))].id : ""
     readonly property string scopeName: hasScope ? scopes[Math.max(0, Math.min(scopeSel, scopes.length - 1))].name : ""
@@ -143,6 +242,73 @@ ShellRoot {
     property string applyMsg: ""
     property string applyErr: ""
     property bool applyOk: false
+
+    // ----- SECTION: hàng của từng section, focus, di chuyển xuyên section -----
+    property int themeSel: 0                // 0 = PRESET, 1 = TINT, 2 = INK DARKEN
+    function secCount(s) {
+        if (s === "theme") return tintEditable ? 3 : 1
+        if (s === "font") return fontRows.length
+        if (s === "keys") return kbList.length
+        if (s === "options") return optList.length
+        return 0
+    }
+    function secSel(s) { return s === "theme" ? themeSel : (s === "font" ? fontSel : (s === "keys" ? keySel : optSel)) }
+    readonly property var secList: secIds.filter(s => secCount(s) > 0)
+    function secTitle(s) {
+        if (s === "options") return objOptList.length > 0 ? (plainOptList.length > 0 ? "OPTIONS / OBJECTS" : "OBJECTS") : "OPTIONS"
+        return s.toUpperCase()
+    }
+    // Mô hình cho danh sách chính: tiêu đề section + từng hàng.
+    readonly property var viewRows: {
+        const out = []
+        for (let s = 0; s < secIds.length; s++) {
+            const n = secCount(secIds[s])
+            if (n === 0) continue
+            out.push({ kind: "head", sec: secIds[s], i: -1 })
+            for (let i = 0; i < n; i++) out.push({ kind: "row", sec: secIds[s], i: i })
+        }
+        return out
+    }
+    readonly property int flatCount: {
+        let n = 0
+        for (let s = 0; s < secIds.length; s++) n += secCount(secIds[s])
+        return n
+    }
+    // vị trí hàng đang focus trong viewRows (để ListView cuộn theo)
+    readonly property int viewSel: {
+        for (let k = 0; k < viewRows.length; k++) if (viewRows[k].kind === "row" && viewRows[k].sec === page && viewRows[k].i === secSel(page)) return k
+        return 0
+    }
+    function focusRow(s, i) {
+        capturing = false; pickOpen = false; optEditing = false; capMsg = ""; optMsg = ""
+        const n = secCount(s)
+        if (n === 0) return
+        const j = Math.max(0, Math.min(i, n - 1))
+        page = s
+        if (s === "theme") themeSel = j; else if (s === "font") fontSel = j; else if (s === "keys") keySel = j; else optSel = j
+    }
+    // W/S: đi hàng kế tiếp, hết section thì sang section kế (vòng tròn)
+    function moveRow(d) {
+        const seq = []
+        for (let s = 0; s < secIds.length; s++) for (let i = 0; i < secCount(secIds[s]); i++) seq.push([secIds[s], i])
+        if (seq.length === 0) return
+        let k = 0
+        for (let q = 0; q < seq.length; q++) if (seq[q][0] === page && seq[q][1] === secSel(page)) { k = q; break }
+        k = (k + d + seq.length) % seq.length
+        focusRow(seq[k][0], seq[k][1])
+    }
+    function jumpSection(n) {
+        const l = secList
+        if (n < 0 || n >= l.length) return
+        focusRow(l[n], secSel(l[n]))
+    }
+    function cycleSection(d) {
+        const l = secList
+        if (l.length === 0) return
+        let i = l.indexOf(page)
+        if (i < 0) i = 0
+        jumpSection((i + d + l.length) % l.length)
+    }
 
     // ----- THEME -----
     property var draft: ({ theme: null, tint: null, inkDarken: null })
@@ -163,7 +329,7 @@ ShellRoot {
     readonly property var fontStored: ce.fontsOf(cfg.data, scopeId)
     readonly property var fontInh: ce.fontsInherited(cfg.data, scopeId)
     readonly property bool fontDirty: !ce.sameFonts(fontDraft, fontStored)
-    readonly property var fontRows: scopeId === "global" ? ce.roles : ce.fontRolesOf(scopeApp)
+    readonly property var fontRows: scopeId === "global" ? ce.roles : (scopeApp !== null ? ce.fontRolesOf(scopeApp) : [])
     readonly property string pickRole: fontRows.length > 0 ? fontRows[Math.max(0, Math.min(fontSel, fontRows.length - 1))] : ""
     property var fontList: []
     property bool fontListLoaded: false
@@ -311,9 +477,23 @@ ShellRoot {
     property bool optEditing: false
     property string optBuf: ""
     property string optMsg: ""
-    // OPTIONS: option khai trong manifest. OBJECTS: danh sách "ảo" sinh từ manifest.functions[] (xem SumiConfigEdit.objectOptsOf).
-    readonly property var optList: page === "objects" ? (hasObjects(scopeApp) ? ce.objectOptsOf(scopeApp) : []) : ((page === "options" && scopeId === "hub") ? ce.hubOptsList() : (hasOptions(scopeApp) ? scopeApp.options : []))
-    readonly property var optStored: page === "objects" ? ce.objectsOf(cfg.data, scopeId, optList) : ((page === "options" && scopeId === "hub") ? ce.hubOptionsOf(cfg.data) : ce.optionsOf(cfg.data, scopeId, optList))
+    // OPTIONS gồm hai nhóm trong cùng một danh sách: OBJECTS (hàng "ảo" sinh từ manifest.functions[], xem SumiConfigEdit.objectOptsOf) rồi option khai trong manifest.
+    // Ghi config thì tách lại: objects -> apps.<id>.objects, còn lại -> apps.<id>.options (hub: config.hub).
+    readonly property var objOptList: (scopeId !== "hub" && hasObjects(scopeApp)) ? ce.objectOptsOf(scopeApp) : []
+    readonly property var plainOptList: scopeId === "hub" ? ce.hubOptsList() : (hasOptions(scopeApp) ? optsWithout(scopeApp.options, objOptList) : [])
+    readonly property var optList: objOptList.concat(plainOptList)
+    function optsWithout(list, excl) {
+        const ex = ({})
+        for (let i = 0; i < excl.length; i++) ex[excl[i].key] = true
+        return list.filter(o => ex[o.key] !== true)
+    }
+    function mergeOpts(a, b) {
+        const o = ({})
+        for (const k1 in a) o[k1] = a[k1]
+        for (const k2 in b) o[k2] = b[k2]
+        return o
+    }
+    readonly property var optStored: mergeOpts(ce.objectsOf(cfg.data, scopeId, objOptList), scopeId === "hub" ? ce.hubOptionsOf(cfg.data) : ce.optionsOf(cfg.data, scopeId, plainOptList))
     readonly property bool optDirty: !ce.sameOptions(optDraft, optStored)
     readonly property var optConf: ce.optConflicts(optList, optDraft)
     readonly property var curOpt: (optList.length > 0 && optSel >= 0 && optSel < optList.length) ? optList[optSel] : null
@@ -380,54 +560,50 @@ ShellRoot {
     function presetKanji(n) {
         return n === "paper" ? "紙" : n === "ink" ? "墨" : n === "mono-white" ? "白" : n === "mono-black" ? "黒" : n === "accent" ? "彩" : "随"
     }
-    function scopeTag(p, id) {
-        if (p === "theme") { const lk = ce.lookOf(cfg.data, id); return lk.theme !== null ? lk.theme.toUpperCase() : "INHERIT" }
-        if (p === "font") {
-            const f = ce.fontsOf(cfg.data, id)
-            let n = 0
-            for (let i = 0; i < ce.roles.length; i++) if (f[ce.roles[i]] !== null) n++
-            return n > 0 ? (n + " SET") : "INHERIT"
-        }
-        if (p === "objects") {
-            const ao = appById(id)
-            const n4 = Object.keys(ce.objectsOf(cfg.data, id, ao !== null ? ce.objectOptsOf(ao) : [])).length
-            return n4 > 0 ? (n4 + " CUSTOM") : "DEFAULT"
-        }
-        if (p === "options" && id === "hub") return Object.keys(ce.hubOptionsOf(cfg.data)).length > 0 ? (Object.keys(ce.hubOptionsOf(cfg.data)).length + " CUSTOM") : "DEFAULT"
-        if (p === "options") {
+    // Nhãn ở danh sách phạm vi: số mục đã tuỳ chỉnh (theme + font + phím + option + object) của phạm vi đó.
+    function scopeTag(id) {
+        const lk = ce.lookOf(cfg.data, id)
+        let n = (lk.theme !== null || lk.tint !== null || lk.inkDarken !== null) ? 1 : 0
+        const f = ce.fontsOf(cfg.data, id)
+        for (let i = 0; i < ce.roles.length; i++) if (f[ce.roles[i]] !== null) n++
+        n += Object.keys(ce.keysOf(cfg.data, id)).length
+        if (id === "hub") n += Object.keys(ce.hubOptionsOf(cfg.data)).length
+        else {
             const a = appById(id)
-            const n3 = Object.keys(ce.optionsOf(cfg.data, id, a !== null && Array.isArray(a.options) ? a.options : [])).length
-            return n3 > 0 ? (n3 + " CUSTOM") : "DEFAULT"
+            if (a !== null) {
+                n += Object.keys(ce.objectsOf(cfg.data, id, ce.objectOptsOf(a))).length
+                n += Object.keys(ce.optionsOf(cfg.data, id, Array.isArray(a.options) ? a.options : [])).length
+            }
         }
-        const n2 = Object.keys(ce.keysOf(cfg.data, id)).length
-        return n2 > 0 ? (n2 + " CUSTOM") : "DEFAULT"
+        return n > 0 ? (n + " SET") : "DEFAULT"
     }
-    function tabDirty(id) { return id === "theme" ? dirty : (id === "font" ? fontDirty : (id === "keys" ? keyDirty : (id === page ? optDirty : false))) }
+    function tabDirty(id) { return id === "theme" ? dirty : (id === "font" ? fontDirty : (id === "keys" ? keyDirty : (id === "options" ? optDirty : false))) }
+    readonly property bool anyDirty: dirty || fontDirty || keyDirty || optDirty
+    readonly property var dirtyList: secIds.filter(s => secCount(s) > 0 && tabDirty(s))
     function loadDraft() {
         draft = ce.lookOf(cfg.data, scopeId)
         fontDraft = ce.fontsOf(cfg.data, scopeId)
         keyDraft = ce.keysOf(cfg.data, scopeId)
         optDraft = optStored
-        fontSel = 0; keySel = 0; optSel = 0
+        themeSel = 0; fontSel = 0; keySel = 0; optSel = 0
         pickOpen = false; capturing = false; capMsg = ""
         optEditing = false; optBuf = ""; optMsg = ""
         applyMsg = ""; applyErr = ""
+        if (secCount(page) === 0) page = "theme"
     }
-    // Vào trang p với phạm vi id (không có trong danh sách thì về phần tử đầu).
+    // Vào cài đặt ở section p với phạm vi id (không có trong danh sách thì về phần tử đầu).
     function enterPage(p, id) {
-        page = p
-        const ids = scopeListFor(p).map(s => s.id)
+        page = secIds.indexOf(p) >= 0 ? p : "theme"
+        const ids = scopes.map(s => s.id)
         const i = ids.indexOf(id)
         scopeSel = i >= 0 ? i : 0
-        if (p === "font") ensureFonts()
+        keepScope = scopeId
+        ensureFonts()
         loadDraft()
     }
-    function openSettings(p) { enterPage(p, ((p === "keys" || p === "options" || p === "objects") && cur !== null) ? cur.id : keepScope) }
+    // Từ dashboard: mở cài đặt của app đang chọn (p "objects" cũ = section options)
+    function openSettings(p) { enterPage(p === "objects" ? "options" : p, cur !== null ? cur.id : keepScope) }
     function closeSettings() { page = "apps"; pickOpen = false; capturing = false; optEditing = false }
-    function cycleTab(d) {
-        const i = tabIds.indexOf(page)
-        enterPage(tabIds[(i + d + tabIds.length) % tabIds.length], keepScope)
-    }
     function setScope(i) {
         if (scopes.length === 0) return
         scopeSel = Math.max(0, Math.min(i, scopes.length - 1))
@@ -455,6 +631,66 @@ ShellRoot {
     function inheritScope() {
         draft = { theme: null, tint: null, inkDarken: null }
         applyMsg = ""; applyErr = ""
+    }
+    function resetThemeRow() {
+        if (themeSel === 0) draft = { theme: null, tint: draft.tint, inkDarken: draft.inkDarken }
+        else if (themeSel === 1) draft = { theme: draft.theme, tint: null, inkDarken: draft.inkDarken }
+        else draft = { theme: draft.theme, tint: draft.tint, inkDarken: null }
+        applyMsg = ""; applyErr = ""
+    }
+    // A/D (và Enter) trên hàng đang focus; R = mặc định hàng; X = mặc định cả section
+    function rowAdjust(d) {
+        if (page === "theme") {
+            if (themeSel === 0) movePreset(d)
+            else if (themeSel === 1) nudge("tint", 0.02 * d)
+            else nudge("ink", 0.1 * d)
+        } else if (page === "options") nudgeOpt(d)
+    }
+    function rowEnter() {
+        if (page === "theme") { if (themeSel === 0) movePreset(1) }
+        else if (page === "font") openPicker()
+        else if (page === "keys") startCapture()
+        else if (page === "options") enterOpt()
+    }
+    function rowReset() {
+        if (page === "theme") resetThemeRow()
+        else if (page === "font") resetFontRow()
+        else if (page === "keys") resetKeyRow()
+        else if (page === "options") resetOptRow()
+    }
+    function sectionReset() {
+        if (page === "theme") inheritScope()
+        else if (page === "font") resetFontAll()
+        else if (page === "keys") resetKeyAll()
+        else if (page === "options") resetOptAll()
+    }
+    // Dòng chi tiết cho hàng đang focus (cột phải) + kết quả Apply.
+    readonly property var detailLines: {
+        const L = []
+        if (page === "theme") {
+            L.push({ t: "CONTRAST  " + curDerived.contrast.toFixed(2) + " : 1   " + (blocked ? "BLOCKED (<4.5)" : (weak ? "WEAK (<7)" : "OK")), bad: blocked })
+            if (!tintEditable) L.push({ t: "HUB dùng tint và độ đậm của GLOBAL", bad: false })
+            else L.push({ t: themeSel === 0 ? "A/D ĐỔI PRESET   R INHERIT" : (themeSel === 1 ? "A/D CHỈNH TINT (0..0.6)   R INHERIT" : "A/D CHỈNH INK DARKEN (1..2.5)   R INHERIT"), bad: false })
+        } else if (page === "font") {
+            if (fontWarn !== "") L.push({ t: fontWarn, bad: true })
+            else L.push({ t: fontListLoaded ? (fontList.length + " FONTS INSTALLED") : "LOADING FONT LIST...", bad: false })
+            L.push({ t: "ENTER MỞ BỘ CHỌN FONT   R INHERIT", bad: false })
+        } else if (page === "keys") {
+            const cm = (curKb !== null && keyConf[curKb.action] !== undefined) ? keyConf[curKb.action] : []
+            if (capMsg !== "") L.push({ t: capMsg, bad: true })
+            else if (capturing) L.push({ t: "ĐANG GÁN: " + (curKb !== null ? curKb.action : ""), bad: false })
+            else if (cm.length > 0) L.push({ t: "CẢNH BÁO: " + cm.join("; "), bad: true })
+            else if (keyConfCount > 0) L.push({ t: keyConfCount + " ACTION CÓ CẢNH BÁO", bad: true })
+            else L.push({ t: "KHÔNG TRÙNG PHÍM", bad: false })
+            L.push({ t: "ENTER GÁN PHÍM   R MẶC ĐỊNH", bad: false })
+        } else if (page === "options") {
+            const cm2 = (curOpt !== null && optConf[curOpt.key] !== undefined) ? optConf[curOpt.key] : []
+            if (optMsg !== "") L.push({ t: optMsg, bad: true })
+            else if (cm2.length > 0) L.push({ t: "CẢNH BÁO: " + cm2.join("; "), bad: true })
+            else L.push({ t: String(ce.optHint(curOpt)), bad: false })
+        }
+        if (applyMsg !== "") L.push({ t: applyErr !== "" ? (applyMsg + "  " + applyErr) : applyMsg, bad: !applyOk })
+        return L
     }
 
     // ===== CRT (GĐ4b): bật máy / tắt máy cho cửa sổ hub =====
@@ -530,7 +766,7 @@ ShellRoot {
     property int revertLeft: 0
     property int revertTotal: 0
     function revertArmed() {
-        if (page === "options" && scopeId === "hub") return false    // đổi chính cài đặt auto-revert thì không tự hoàn tác
+        if (scopeId === "hub" && optDirty) return false    // đổi chính cài đặt auto-revert thì không tự hoàn tác
         return ce.autoRevertOf(cfg.data).on
     }
     function applyDone(code) {
@@ -595,42 +831,38 @@ ShellRoot {
         applyProc.command = [sumiBin, "config", "apply", JSON.stringify(next)]
         applyProc.running = true
     }
+    // Apply gộp: mọi section đang có thay đổi của phạm vi hiện tại được ghi trong MỘT lần `sumi config apply`.
     function applyCurrent() {
         if (applyProc.running) return
-        if (page === "theme") applyTheme()
-        else if (page === "font") applyFonts()
-        else if (page === "keys") applyKeys()
-        else if (page === "options" || page === "objects") applyOptions()
+        let next = cfg.data
+        const done = []
+        if (dirty) {
+            if (blocked) { fail("BLOCKED", "THEME: tương phản dưới 4.5, không cho áp dụng"); return }
+            const e1 = ce.validateLook(draft, scopeId)
+            if (e1.length > 0) { fail("REJECTED", e1.join("; ")); return }
+            next = ce.withLook(next, scopeId, draft); done.push("THEME")
+        }
+        if (fontDirty && fontRows.length > 0) {
+            const e2 = ce.validateFonts(fontDraft, scopeId)
+            if (e2.length > 0) { fail("REJECTED", e2.join("; ")); return }
+            next = ce.withFonts(next, scopeId, fontDraft); done.push("FONT")
+        }
+        if (keyDirty && kbList.length > 0) {
+            const e3 = ce.validateKeys(keyDraft, kbList, scopeId)
+            if (e3.length > 0) { fail("REJECTED", e3.join("; ")); return }
+            next = ce.withKeys(next, scopeId, keyDraft, kbList); done.push("KEYS")
+        }
+        if (optDirty && optList.length > 0) {
+            const e4 = ce.validateOptions(optDraft, optList, scopeId)
+            if (e4.length > 0) { fail("REJECTED", e4.join("; ")); return }
+            if (scopeId === "hub") next = ce.withHubOptions(next, optDraft)
+            else { next = ce.withObjects(next, scopeId, optDraft, objOptList); next = ce.withOptions(next, scopeId, optDraft, plainOptList) }
+            done.push("OPTIONS")
+        }
+        if (done.length === 0) { fail("NO CHANGES"); return }
+        commitConfig(next)
     }
-    function applyTheme() {
-        if (!dirty) { fail("NO CHANGES"); return }
-        if (blocked) { fail("BLOCKED", "tương phản dưới 4.5, không cho áp dụng"); return }
-        const errs = ce.validateLook(draft, scopeId)
-        if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
-        commitConfig(ce.withLook(cfg.data, scopeId, draft))
-    }
-    function applyFonts() {
-        if (scopeId === "hub" || !hasScope) { fail("REJECTED", "chọn GLOBAL hoặc một app"); return }
-        if (!fontDirty) { fail("NO CHANGES"); return }
-        const errs = ce.validateFonts(fontDraft, scopeId)
-        if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
-        commitConfig(ce.withFonts(cfg.data, scopeId, fontDraft))
-    }
-    function applyOptions() {
-        if (!hasScope) { fail("REJECTED", "không có app nào có option"); return }
-        if (!optDirty) { fail("NO CHANGES"); return }
-        const errs = ce.validateOptions(optDraft, optList, scopeId)
-        if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
-        commitConfig(page === "objects" ? ce.withObjects(cfg.data, scopeId, optDraft, optList)
-                     : (scopeId === "hub" ? ce.withHubOptions(cfg.data, optDraft) : ce.withOptions(cfg.data, scopeId, optDraft, optList)))
-    }
-    function applyKeys() {
-        if (!hasScope) { fail("REJECTED", "không có app nào có keybind"); return }
-        if (!keyDirty) { fail("NO CHANGES"); return }
-        const errs = ce.validateKeys(keyDraft, kbList, scopeId)
-        if (errs.length > 0) { fail("REJECTED", errs.join("; ")); return }
-        commitConfig(ce.withKeys(cfg.data, scopeId, keyDraft, kbList))
-    }
+
     Process {
         id: applyProc
         stderr: StdioCollector { onStreamFinished: if (root.applyMsg !== "APPLIED") root.applyErr = this.text.trim() }
@@ -650,19 +882,18 @@ ShellRoot {
 
 
     // ===== PREVIEW (GĐ2b-5): khung thu nhỏ nạp View.qml của app ở previewMode =====
-    property bool previewOn: false
     readonly property var pvApp: {
         if (page === "store") return null
         if (page === "apps") return cur
-        if ((page === "theme" || page === "options") && scopeId === "hub") return null
+        if (scopeId === "hub") return null
         if (scopeApp !== null && scopeId !== "global") return scopeApp
         return cur !== null ? cur : (apps.length > 0 ? apps[0] : null)
     }
     readonly property var pvFns: (pvApp !== null && Array.isArray(pvApp.functions)) ? pvApp.functions : []
-    // function đang xem: trang APPS theo A/D; tab OBJECTS theo hàng đang chọn; còn lại function đầu tiên
+    // function đang xem: trang APPS theo A/D; section OPTIONS theo hàng đang chọn (tiền tố function); còn lại function đầu tiên
     readonly property var pvFnObj: {
         if (pvFns.length === 0) return null
-        if (page === "objects" && curOpt !== null) {
+        if (page === "options" && curOpt !== null) {
             const kk = ce.splitObjKey(curOpt.key)
             if (kk !== null) for (let i = 0; i < pvFns.length; i++) if (pvFns[i].id === kk[0]) return pvFns[i]
         }
@@ -676,13 +907,13 @@ ShellRoot {
     readonly property var pvObjectCfg: {
         if (pvApp === null) return ({})
         let d = cfg.data
-        if (page === "objects" && scopeId === pvApp.id) d = ce.withObjects(cfg.data, pvApp.id, optDraft, optList)
+        if (inSettings && scopeId === pvApp.id) d = ce.withObjects(cfg.data, pvApp.id, optDraft, objOptList)
         const a = (d !== null && typeof d === "object" && d.apps !== null && typeof d.apps === "object" && d.apps[pvApp.id] !== undefined) ? d.apps[pvApp.id] : null
         return (a !== null && typeof a === "object" && a.objects !== null && typeof a.objects === "object") ? a.objects : ({})
     }
     // Giá trị look hiệu lực cho app đang preview; đang sửa chính scope đó (hoặc global mà app không ghi đè) thì lấy bản nháp.
     function pvPick(key, eff) {
-        if (page === "theme" && pvApp !== null) {
+        if (inSettings && pvApp !== null) {
             if (scopeId === pvApp.id) return eff
             if (scopeId === "global") return pvLookS[key] !== null ? pvLookS[key] : eff
         }
@@ -692,8 +923,8 @@ ShellRoot {
         if (pvApp === null) return ce.fontDefaults[role]
         const own = ce.fontsOf(cfg.data, pvApp.id)[role]
         let v
-        if (page === "font" && scopeId === pvApp.id) v = fontEff(role)
-        else if (page === "font" && scopeId === "global") v = own !== null ? own : fontEff(role)
+        if (inSettings && scopeId === pvApp.id) v = fontEff(role)
+        else if (inSettings && scopeId === "global") v = own !== null ? own : fontEff(role)
         else v = own !== null ? own : ce.fontsInherited(cfg.data, pvApp.id)[role]
         return v !== "" ? v : (role === "kanji" ? Qt.application.font.family : ce.fontDefaults[role])
     }
@@ -888,7 +1119,7 @@ ShellRoot {
 
     readonly property string footerText: {
         if (revertActive) return "ENTER KEEP   ESC REVERT NOW"
-        if (page === "apps") return "W/S APP  A/D FUNC  ENTER RUN  T THEME  F FONT  K KEYS  O OPTION  J OBJECT  V PREVIEW  G STORE  ESC"
+        if (page === "apps") return "W/S APP  A/D FUNC  ENTER RUN  TAB SETTINGS  T F K O JUMP  G STORE  ESC"
         if (page === "store") {
             if (storeBusy) return "WORKING ...   PLEASE WAIT"
             if (storeView === "confirm") return confirmOk ? "ENTER CONFIRM   ESC CANCEL" : "BLOCKED   ESC BACK"
@@ -898,10 +1129,7 @@ ShellRoot {
         if (optEditing) return "TYPE VALUE   ENTER OK   ESC CANCEL   BACKSPACE DELETE"
         if (capturing) return "PRESS A KEY   ESC CANCEL"
         if (pickOpen) return "TYPE FILTER   UP/DOWN MOVE   ENTER SELECT   TAB " + (pickKind === "ja" ? "JA ONLY" : (pickKind === "mono" ? "MONO ONLY" : "-")) + "   ESC CANCEL"
-        if (page === "theme") return "W/S SCOPE  A/D PRESET  -/= TINT  ,/. INK  ENTER APPLY  R INHERIT  TAB NEXT  ESC BACK"
-        if (page === "font") return "W/S ROLE  Q/E SCOPE  ENTER PICK  SPACE APPLY  R RESET  X ALL  TAB NEXT  ESC BACK"
-        if (page === "options" || page === "objects") return "W/S ROW  A/D CHANGE  ENTER EDIT  Q/E APP  SPACE APPLY  R DEFAULT  X ALL  TAB NEXT  ESC BACK"
-        return "W/S ACTION  Q/E APP  ENTER REBIND  SPACE APPLY  R DEFAULT  X ALL  TAB NEXT  ESC BACK"
+        return "W/S ROW  A/D CHANGE  ENTER EDIT  Q/E APP  TAB SECTION  SPACE APPLY  R DEFAULT  X SECTION  ESC BACK"
     }
 
     Timer { id: quitTimer; interval: 150; repeat: false; onTriggered: root.finish() }
@@ -915,6 +1143,64 @@ ShellRoot {
     Timer {
         interval: 2000; repeat: true; running: true; triggeredOnStart: true
         onTriggered: if (!listProc.running) listProc.running = true
+    }
+
+
+    // Số liệu hệ thống thật cho dashboard (kiểu skill: một Process + SplitParser, mỗi 2 s, chỉ khi đang ở trang APPS)
+    Process {
+        id: sysProc
+        command: ["sh", "-c", [
+            "echo begin=1",
+            "echo up=$(cut -d. -f1 /proc/uptime 2>/dev/null)",
+            "awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print \"mem=\" t \" \" a}' /proc/meminfo 2>/dev/null",
+            "echo load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)",
+            "for b in /sys/class/power_supply/BAT*; do [ -r \"$b/capacity\" ] && { echo \"bat=$(cat \"$b/capacity\") $(cat \"$b/status\" 2>/dev/null)\"; break; }; done",
+            "t=0; for f in /sys/class/hwmon/hwmon*/temp1_input /sys/class/thermal/thermal_zone*/temp; do [ -r \"$f\" ] || continue; v=$(cat \"$f\" 2>/dev/null); [ \"${v:-0}\" -gt \"$t\" ] 2>/dev/null && t=$v; done; echo temp=$t",
+            "tail -n 6 /tmp/sumi.log 2>/dev/null | sed 's/^/log=/'",
+            "echo end=1"
+        ].join("\n")]
+        stdout: SplitParser { onRead: (line) => root.sysLine(line) }
+    }
+    Timer {
+        interval: 2000; repeat: true; triggeredOnStart: true
+        running: root.page === "apps" && !root.closing
+        onTriggered: if (!sysProc.running) sysProc.running = true
+    }
+    Timer {
+        interval: 1000; repeat: true; running: true; triggeredOnStart: true
+        onTriggered: root.nowText = Qt.formatDateTime(new Date(), "ddd dd MMM   HH:mm:ss").toUpperCase()
+    }
+    Timer {
+        interval: 130; repeat: true
+        running: root.page === "apps" && root.crtContentP >= 1 && !root.closing
+        onTriggered: root.hexText = "0x" + root.hex4() + " " + root.hex4() + " " + root.hex4()
+    }
+
+    // Thanh ô vuông (PixelBar): ô cuối đang sáng nhấp nháy. Inline component không thấy id bên ngoài nên màu truyền qua property.
+    component PixelBar: Item {
+        id: pb
+        property real value: 0
+        property int cells: 20
+        property color litColor: "#000000"
+        property color dimColor: "#888888"
+        property color alertColor: "#E63946"
+        property bool alert: false
+        property bool blink: true
+        readonly property int lit: Math.round(Math.max(0, Math.min(1, value)) * cells)
+        Timer { interval: 420; repeat: true; running: pb.visible && pb.lit > 0; onTriggered: pb.blink = !pb.blink }
+        Row {
+            spacing: 2
+            Repeater {
+                model: pb.cells
+                delegate: Rectangle {
+                    required property int index
+                    width: Math.max(1, (pb.width - (pb.cells - 1) * 2) / pb.cells)
+                    height: pb.height
+                    color: index < pb.lit ? (pb.alert ? pb.alertColor : pb.litColor) : pb.dimColor
+                    opacity: index >= pb.lit ? 0.45 : ((index === pb.lit - 1 && !pb.blink) ? 0.3 : 1)
+                }
+            }
+        }
     }
 
     PanelWindow {
@@ -937,21 +1223,31 @@ ShellRoot {
 
         Item {
             id: card
-            anchors.centerIn: parent
-            readonly property real u: Math.max(0.6, Math.min(win.width / 1920, win.height / 1080))
+            anchors.fill: parent
+            // Toàn màn hình. zoom nhân thêm vào u để chữ/khung dễ đọc ở 1080p; px()/fs() vẫn là đơn vị thiết kế 1920x1080.
+            readonly property real zoom: 1.15
+            readonly property real u: Math.max(0.6, Math.min(win.width / 1920, win.height / 1080) * zoom)
             function px(n) { return Math.max(1, Math.round(n * u)) }
             function fs(n) { return Math.max(8, Math.round(n * u)) }
-            width: px(1000)
-            height: px(600)
             opacity: root.crtFlicker
             transform: Scale {
                 origin.x: card.width / 2; origin.y: card.height / 2
                 xScale: root.crtXs; yScale: root.crtYs
             }
-            readonly property real m: px(26)
-            readonly property real pvW: px(340)
+            readonly property real m: px(44)
+            // Hình học dashboard (trang APPS): vùng nội dung giữa thanh trên và chân trang, chia 3 cột A / B / C
+            readonly property real gx: m
+            readonly property real gy: px(76)
+            readonly property real gw: width - 2 * m
+            readonly property real gh: height - px(76) - px(96)
+            readonly property real gg: px(30)
+            readonly property real wA: Math.round(gw * 0.22)
+            readonly property real wC: Math.round(gw * 0.30)
+            readonly property real wB: gw - wA - wC - 2 * gg
+            readonly property real dashPvY: px(36)
+            // Preview luôn bật (trừ trang STORE): chiếm đầu cột C ở dashboard và ở màn hình cài đặt, không cao quá ~36% vùng nội dung để cột C luôn đủ chỗ.
+            readonly property real pvW: root.page !== "store" ? Math.min(wC, Math.round(gh * 0.36 * 16 / 9)) : px(340)
             readonly property real pvH: Math.round(pvW * 9 / 16)
-            readonly property real pvReserve: (root.previewOn && root.page !== "store") ? (pvH + px(34)) : 0
 
             // Chặn phím ~150ms đầu để không ăn nhầm phím vừa bấm để mở hub
             property bool inputReady: false
@@ -970,9 +1266,8 @@ ShellRoot {
                     else if (k === Qt.Key_F) { if (!ar) root.openSettings("font"); event.accepted = true }
                     else if (k === Qt.Key_K) { if (!ar) root.openSettings("keys"); event.accepted = true }
                     else if (k === Qt.Key_O) { if (!ar) root.openSettings("options"); event.accepted = true }
-                    else if (k === Qt.Key_J) { if (!ar) root.openSettings("objects"); event.accepted = true }
+                    else if (k === Qt.Key_J) { if (!ar) root.openSettings("options"); event.accepted = true }
                     else if (k === Qt.Key_G) { if (!ar) root.openStore(); event.accepted = true }
-                    else if (k === Qt.Key_V) { if (!ar) root.previewOn = !root.previewOn; event.accepted = true }
                     else if (k === Qt.Key_W || k === Qt.Key_Up) { root.move(-1); event.accepted = true }
                     else if (k === Qt.Key_S || k === Qt.Key_Down) { root.move(1); event.accepted = true }
                     else if (k === Qt.Key_A || k === Qt.Key_Left) { root.moveFn(-1); event.accepted = true }
@@ -986,68 +1281,50 @@ ShellRoot {
                 if (root.capturing) { root.captureEvent(event); event.accepted = true; return }
                 if (root.pickOpen) { root.pickerKey(event); event.accepted = true; return }
                 if (k === Qt.Key_Escape) { if (!ar) root.closeSettings(); event.accepted = true; return }
-                if (k === Qt.Key_Tab) { if (!ar) root.cycleTab(1); event.accepted = true; return }
-                if (k === Qt.Key_Backtab) { if (!ar) root.cycleTab(-1); event.accepted = true; return }
-                if (k === Qt.Key_V) { if (!ar) root.previewOn = !root.previewOn; event.accepted = true; return }
-                if (k >= Qt.Key_1 && k <= Qt.Key_5) { if (!ar) root.enterPage(root.tabIds[k - Qt.Key_1], root.keepScope); event.accepted = true; return }
+                if (k === Qt.Key_Tab) { if (!ar) root.cycleSection(1); event.accepted = true; return }
+                if (k === Qt.Key_Backtab) { if (!ar) root.cycleSection(-1); event.accepted = true; return }
+                if (k >= Qt.Key_1 && k <= Qt.Key_4) { if (!ar) root.jumpSection(k - Qt.Key_1); event.accepted = true; return }
                 if (k === Qt.Key_Q) { if (!ar) root.moveScope(-1); event.accepted = true; return }
                 if (k === Qt.Key_E) { if (!ar) root.moveScope(1); event.accepted = true; return }
                 if (k === Qt.Key_Space) { if (!ar) root.applyCurrent(); event.accepted = true; return }
+                if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveRow(-1); event.accepted = true; return }
+                if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveRow(1); event.accepted = true; return }
+                if (k === Qt.Key_A || k === Qt.Key_Left) { root.rowAdjust(-1); event.accepted = true; return }
+                if (k === Qt.Key_D || k === Qt.Key_Right) { root.rowAdjust(1); event.accepted = true; return }
+                if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.rowEnter(); event.accepted = true; return }
+                if (k === Qt.Key_R) { if (!ar) root.rowReset(); event.accepted = true; return }
+                if (k === Qt.Key_X) { if (!ar) root.sectionReset(); event.accepted = true; return }
                 if (root.page === "theme") {
-                    if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveScope(-1); event.accepted = true }
-                    else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveScope(1); event.accepted = true }
-                    else if (k === Qt.Key_A || k === Qt.Key_Left) { if (!ar) root.movePreset(-1); event.accepted = true }
-                    else if (k === Qt.Key_D || k === Qt.Key_Right) { if (!ar) root.movePreset(1); event.accepted = true }
-                    else if (k === Qt.Key_Minus) { root.nudge("tint", -0.02); event.accepted = true }
+                    if (k === Qt.Key_Minus) { root.nudge("tint", -0.02); event.accepted = true }
                     else if (k === Qt.Key_Equal || k === Qt.Key_Plus) { root.nudge("tint", 0.02); event.accepted = true }
                     else if (k === Qt.Key_Comma) { root.nudge("ink", -0.1); event.accepted = true }
                     else if (k === Qt.Key_Period) { root.nudge("ink", 0.1); event.accepted = true }
-                    else if (k === Qt.Key_R) { if (!ar) root.inheritScope(); event.accepted = true }
-                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.applyCurrent(); event.accepted = true }
-                } else if (root.page === "font") {
-                    if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveFontRow(-1); event.accepted = true }
-                    else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveFontRow(1); event.accepted = true }
-                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.openPicker(); event.accepted = true }
-                    else if (k === Qt.Key_R) { if (!ar) root.resetFontRow(); event.accepted = true }
-                    else if (k === Qt.Key_X) { if (!ar) root.resetFontAll(); event.accepted = true }
-                } else if (root.page === "keys") {
-                    if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveKeyRow(-1); event.accepted = true }
-                    else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveKeyRow(1); event.accepted = true }
-                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.startCapture(); event.accepted = true }
-                    else if (k === Qt.Key_R) { if (!ar) root.resetKeyRow(); event.accepted = true }
-                    else if (k === Qt.Key_X) { if (!ar) root.resetKeyAll(); event.accepted = true }
-                } else if (root.page === "options" || root.page === "objects") {
-                    if (k === Qt.Key_W || k === Qt.Key_Up) { if (!ar) root.moveOptRow(-1); event.accepted = true }
-                    else if (k === Qt.Key_S || k === Qt.Key_Down) { if (!ar) root.moveOptRow(1); event.accepted = true }
-                    else if (k === Qt.Key_A || k === Qt.Key_Left) { root.nudgeOpt(-1); event.accepted = true }
-                    else if (k === Qt.Key_D || k === Qt.Key_Right) { root.nudgeOpt(1); event.accepted = true }
-                    else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!ar) root.enterOpt(); event.accepted = true }
-                    else if (k === Qt.Key_R) { if (!ar) root.resetOptRow(); event.accepted = true }
-                    else if (k === Qt.Key_X) { if (!ar) root.resetOptAll(); event.accepted = true }
                 }
             }
 
-            // nền giấy + khung vát góc dưới phải
+            // nền giấy toàn màn hình + khung mảnh 1 px thụt vào, vát góc dưới phải
+            Rectangle { anchors.fill: parent; color: th.paper }
             Shape {
                 anchors.fill: parent
                 ShapePath {
                     id: bodySP
-                    readonly property real c: card.px(44)
-                    fillColor: th.paper
-                    strokeColor: th.ink
-                    strokeWidth: 1.5
-                    startX: 0; startY: 0
-                    PathLine { x: card.width; y: 0 }
-                    PathLine { x: card.width; y: card.height - bodySP.c }
-                    PathLine { x: card.width - bodySP.c; y: card.height }
-                    PathLine { x: 0; y: card.height }
-                    PathLine { x: 0; y: 0 }
+                    readonly property real c: card.px(48)
+                    readonly property real ins: card.px(14)
+                    fillColor: "transparent"
+                    strokeColor: th.rule
+                    strokeWidth: 1
+                    startX: bodySP.ins; startY: bodySP.ins
+                    PathLine { x: card.width - bodySP.ins; y: bodySP.ins }
+                    PathLine { x: card.width - bodySP.ins; y: card.height - bodySP.ins - bodySP.c }
+                    PathLine { x: card.width - bodySP.ins - bodySP.c; y: card.height - bodySP.ins }
+                    PathLine { x: bodySP.ins; y: card.height - bodySP.ins }
+                    PathLine { x: bodySP.ins; y: bodySP.ins }
                 }
             }
 
             // ---------- thanh trên ----------
             Item {
-                x: card.m; y: card.px(18)
+                x: card.m; y: card.px(24)
                 width: card.width - 2 * card.m; height: card.px(34)
                 Rectangle {
                     width: card.px(150); height: parent.height; color: th.ink
@@ -1069,7 +1346,7 @@ ShellRoot {
                 Text {
                     x: card.px(168); anchors.verticalCenter: parent.verticalCenter
                     visible: !root.inSettings
-                    text: root.page === "store" ? "STORE" : "APPS"; color: th.soft
+                    text: root.page === "store" ? "STORE" : "APPS  /  DASHBOARD"; color: th.soft
                     font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
                 }
                 Row {
@@ -1077,7 +1354,7 @@ ShellRoot {
                     visible: root.inSettings
                     spacing: card.px(6)
                     Repeater {
-                        model: root.tabIds
+                        model: root.secList
                         delegate: Rectangle {
                             required property int index
                             required property string modelData
@@ -1093,7 +1370,7 @@ ShellRoot {
                             }
                             MouseArea {
                                 anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                onClicked: root.enterPage(parent.modelData, root.keepScope)
+                                onClicked: root.jumpSection(index)
                             }
                         }
                     }
@@ -1107,546 +1384,1018 @@ ShellRoot {
                 Text {
                     id: topRight
                     anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                    text: root.inSettings ? root.scopeName : (root.page === "store" ? (root.storeApps.length + " IN REGISTRY") : (root.apps.length + " INSTALLED")); color: th.ink
+                    text: root.inSettings ? root.scopeName : (root.page === "store" ? (root.storeApps.length + " IN REGISTRY") : root.nowText); color: th.ink
                     font.family: root.fontData; font.pixelSize: card.fs(16); font.bold: true
                 }
                 Rectangle { anchors.bottom: parent.bottom; anchors.bottomMargin: -card.px(8); width: parent.width; height: 1; color: th.rule }
             }
 
-            // ---------- danh sách app (trái) ----------
-            ListView {
-                id: list
+            // ---------- DASHBOARD (trang APPS): 3 cột A (app/registry/log), B (chi tiết/function/keybind/RUN), C (preview/system/phím) ----------
+            Item {
+                id: dash
                 visible: root.page === "apps"
-                x: card.m; y: card.px(76)
-                width: card.px(340); height: card.height - card.px(76) - card.px(96) - card.pvReserve
-                clip: true
-                interactive: false
-                model: root.apps
-                currentIndex: root.sel
-                onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
-                delegate: Item {
-                    id: row
-                    required property int index
-                    required property var modelData
-                    readonly property bool on: index === root.sel
-                    width: list.width
-                    height: card.px(56)
-                    Rectangle {
-                        anchors.fill: parent; anchors.bottomMargin: 1
-                        color: row.on ? th.ink : (rowMouse.containsMouse ? th.wash : "transparent")
-                    }
-                    Text {
-                        x: card.px(16); anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width - card.px(150)
-                        elide: Text.ElideRight
-                        text: row.modelData.name
-                        color: row.on ? th.paper : th.ink
-                        font.family: root.fontLabel; font.pixelSize: card.fs(21); font.bold: true
-                    }
-                    Text {
-                        anchors.right: parent.right; anchors.rightMargin: card.px(16)
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: row.modelData.running ? "● RUNNING" : ("v" + row.modelData.version)
-                        color: row.on ? th.paper : (row.modelData.running ? th.ink : th.soft)
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: row.modelData.running
-                    }
-                    MouseArea {
-                        id: rowMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: { root.sel = row.index; root.fnSel = 0 }
-                    }
-                }
-            }
-            Rectangle { visible: root.page === "apps"; x: card.m; y: card.px(76); width: card.px(340); height: 1; color: th.ink }
+                x: card.gx; y: card.gy; width: card.gw; height: card.gh
+                readonly property real regH: card.px(132)
+                readonly property real logH: card.px(168)
+                readonly property real pg: card.px(22)
 
-            // ---------- chi tiết (phải) ----------
-            Item {
-                id: rc
-                x: card.m + card.px(340) + card.px(30)
-                y: card.px(76)
-                width: card.width - x - card.m
-                height: list.height
-                visible: root.page === "apps" && root.cur !== null
-
-                Rectangle { width: parent.width; height: 1; color: th.ink }
-                ScrambleText {
-                    x: card.px(2); y: card.px(6)
-                    width: rc.width - card.px(150); height: card.px(84)
-                    verticalAlignment: Text.AlignVCenter
-                    full: root.cur ? root.cur.name.toUpperCase() : ""
-                    active: root.cur !== null
-                    color: th.ink
-                    font.family: root.fontTitle; font.bold: true
-                    font.pixelSize: card.fs(56); fontSizeMode: Text.Fit; minimumPixelSize: card.fs(24)
-                }
-                ScrambleText {
-                    anchors.right: parent.right; y: card.px(2)
-                    full: root.cur ? root.cur.kanji : ""
-                    active: root.cur !== null
-                    color: th.rule
-                    font.family: root.fontKanji; font.pixelSize: card.fs(88)
-                }
-                Rectangle { y: card.px(96); width: parent.width; height: 1; color: th.ink }
-
-                Text {
-                    y: card.px(108); width: parent.width
-                    wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
-                    text: root.cur ? root.cur.description : ""
-                    color: th.ink
-                    font.family: root.fontLabel; font.pixelSize: card.fs(18)
-                }
-
-                Repeater {
-                    model: root.cur ? [
-                        ["VERSION", root.cur.version],
-                        ["KIND", root.cur.kind === "daemon" ? "DAEMON (giữ trạng thái)" : "ONESHOT (chạy xong thoát)"],
-                        ["STATUS", root.cur.running ? "RUNNING" : "IDLE"]
-                    ] : []
-                    delegate: Item {
-                        required property int index
-                        required property var modelData
-                        y: card.px(190) + index * card.px(36)
-                        width: rc.width; height: card.px(36)
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: modelData[0]; color: th.soft
-                            font.family: root.fontLabel; font.pixelSize: card.fs(15); font.letterSpacing: 1.5
-                        }
-                        Text {
-                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                            text: modelData[1]; color: th.ink
-                            font.family: root.fontData; font.pixelSize: card.fs(16); font.bold: true
-                        }
-                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: th.rule; opacity: 0.7 }
-                    }
-                }
-
-                // function của app daemon (A/D để chọn) hoặc gợi ý cho app oneshot
-                Text {
-                    y: card.px(312)
-                    text: root.cur && root.cur.kind === "daemon" ? "FUNCTION" : "CHẠY THỬ"
-                    color: th.soft
-                    font.family: root.fontLabel; font.pixelSize: card.fs(15); font.letterSpacing: 1.5
-                }
-                Row {
-                    y: card.px(338)
-                    spacing: card.px(10)
-                    visible: root.cur !== null && root.cur.kind === "daemon"
-                    Repeater {
-                        model: root.curFns
-                        delegate: Rectangle {
-                            required property int index
-                            required property var modelData
-                            readonly property bool on: index === root.fnSel
-                            width: card.px(150); height: card.px(44)
-                            color: on ? th.ink : "transparent"
-                            border.width: 1; border.color: th.ink
-                            Text {
-                                anchors.centerIn: parent
-                                text: modelData.label
-                                color: parent.on ? th.paper : th.ink
-                                font.family: root.fontLabel; font.pixelSize: card.fs(16); font.bold: true; font.letterSpacing: 1
-                            }
-                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.fnSel = parent.index }
-                        }
-                    }
-                }
-                Text {
-                    y: card.px(338); width: parent.width
-                    visible: root.cur !== null && root.cur.kind !== "daemon"
-                    wrapMode: Text.WordWrap
-                    text: "Enter mở thử dialog với dữ liệu mẫu (thoát mã 0 = Yes, 1 = No)."
-                    color: th.ink
-                    font.family: root.fontLabel; font.pixelSize: card.fs(17)
-                }
-            }
-
-            // ---------- trạng thái rỗng / lỗi ----------
-            Text {
-                x: card.m + card.px(340) + card.px(30); y: card.px(96)
-                visible: root.page === "apps" && root.cur === null
-                text: root.errorText !== "" ? root.errorText : "KHÔNG CÓ APP NÀO ĐÃ CÀI"
-                color: th.ink
-                font.family: root.fontLabel; font.pixelSize: card.fs(22); font.bold: true
-            }
-            Text {
-                x: card.m; y: card.height - card.px(86); width: card.width - 2 * card.m
-                visible: root.page === "apps" && root.errorText !== "" && root.cur !== null
-                text: root.errorText; color: th.ink
-                font.family: root.fontData; font.pixelSize: card.fs(14)
-            }
-
-            // ---------- trang THEME (2b-1) ----------
-            Item {
-                id: tp
-                visible: root.inSettings
-                anchors.fill: parent
-
-                // danh sách phạm vi (trái)
-                ListView {
-                    id: scopeList
-                    x: card.m; y: card.px(76)
-                    width: card.px(340); height: card.height - card.px(76) - card.px(96) - card.pvReserve
-                    clip: true
-                    interactive: false
-                    model: root.scopes
-                    currentIndex: root.scopeSel
-                    onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
-                    delegate: Item {
-                        id: srow
-                        required property int index
-                        required property var modelData
-                        readonly property bool on: index === root.scopeSel
-                        readonly property string tag: root.scopeTag(root.page, modelData.id)
-                        width: scopeList.width
-                        height: card.px(48)
-                        Rectangle {
-                            anchors.fill: parent; anchors.bottomMargin: 1
-                            color: srow.on ? th.ink : (smouse.containsMouse ? th.wash : "transparent")
-                        }
-                        Text {
-                            x: card.px(16); anchors.verticalCenter: parent.verticalCenter
-                            width: parent.width - card.px(150)
-                            elide: Text.ElideRight
-                            text: srow.modelData.name
-                            color: srow.on ? th.paper : th.ink
-                            font.family: root.fontLabel; font.pixelSize: card.fs(19); font.bold: true
-                        }
-                        Text {
-                            anchors.right: parent.right; anchors.rightMargin: card.px(16)
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: srow.tag
-                            color: srow.on ? th.paper : th.soft
-                            font.family: root.fontData; font.pixelSize: card.fs(13)
-                        }
-                        MouseArea {
-                            id: smouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setScope(srow.index)
-                        }
-                    }
-                }
-                Rectangle { x: card.m; y: card.px(76); width: card.px(340); height: 1; color: th.ink }
-                Text {
-                    x: card.m + card.px(16); y: card.px(96); width: card.px(310)
-                    visible: !root.hasScope
-                    wrapMode: Text.WordWrap
-                    text: root.page === "options" ? "Chưa có app nào khai báo option." : (root.page === "objects" ? "Chưa có app nào cho chọn object." : "Chưa có app nào khai báo keybind.")
-                    color: th.soft
-                    font.family: root.fontLabel; font.pixelSize: card.fs(16)
-                }
-
-                // bảng chỉnh (phải)
+                // ===== cột A =====
                 Item {
-                    id: tr
-                    visible: root.page === "theme"
-                    x: card.m + card.px(340) + card.px(30)
-                    y: card.px(76)
-                    width: card.width - x - card.m
-                    height: scopeList.height
-
+                    id: aCol
+                    x: 0; width: card.wA; height: dash.height
                     Rectangle { width: parent.width; height: 1; color: th.ink }
                     Text {
-                        y: card.px(8)
-                        text: "THEME / " + root.scopeName
-                        color: th.ink
-                        font.family: root.fontTitle; font.pixelSize: card.fs(24); font.bold: true
+                        x: card.px(2); y: card.px(10)
+                        text: "APPS"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                     }
                     Text {
-                        anchors.right: parent.right; y: card.px(14)
-                        text: root.draft.theme === null && root.draft.tint === null && root.draft.inkDarken === null
-                              ? "INHERIT" : (root.dirty ? "DRAFT" : "SAVED")
-                        color: th.soft
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
+                        anchors.right: parent.right; y: card.px(8)
+                        text: root.apps.length + " INSTALLED"; color: th.ink
+                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true
                     }
-
-                    // 6 thẻ preset
-                    Row {
-                        y: card.px(48)
-                        spacing: card.px(8)
-                        Repeater {
-                            model: ce.themes
-                            delegate: Item {
-                                id: pc
-                                required property int index
-                                required property string modelData
-                                readonly property var dv: th.derive(modelData, root.effTint, root.effInk)
-                                readonly property bool on: modelData === root.effTheme
-                                readonly property bool bad: dv.contrast < th.minContrast
-                                readonly property bool weak: !bad && dv.contrast < th.goodContrast
-                                width: Math.floor((tr.width - 5 * card.px(8)) / 6)
-                                height: card.px(112)
-                                Rectangle {
-                                    anchors.fill: parent
-                                    color: pc.dv.paper
-                                    border.width: pc.on ? 3 : 1
-                                    border.color: pc.on ? th.ink : th.rule
-                                    opacity: pc.bad ? 0.55 : 1
-                                }
-                                Text {
-                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(6)
-                                    text: root.presetKanji(pc.modelData); color: pc.dv.ink
-                                    font.family: root.fontKanji; font.pixelSize: card.fs(34)
-                                }
-                                Text {
-                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(54)
-                                    width: parent.width - card.px(6); horizontalAlignment: Text.AlignHCenter
-                                    elide: Text.ElideRight
-                                    text: pc.modelData.toUpperCase(); color: pc.dv.ink
-                                    font.family: root.fontLabel; font.pixelSize: card.fs(11); font.bold: true
-                                }
-                                Text {
-                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(72)
-                                    text: pc.dv.contrast.toFixed(1) + (pc.bad ? " ✕" : (pc.weak ? " !" : ""))
-                                    color: pc.dv.soft
-                                    font.family: root.fontData; font.pixelSize: card.fs(11)
-                                }
-                                Row {
-                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(94)
-                                    spacing: card.px(2)
-                                    Rectangle { width: card.px(14); height: card.px(6); color: pc.dv.ink }
-                                    Rectangle { width: card.px(14); height: card.px(6); color: pc.dv.soft }
-                                    Rectangle { width: card.px(14); height: card.px(6); color: pc.dv.rule }
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.setPreset(pc.modelData)
-                                }
-                            }
-                        }
-                    }
-
-                    // xem trước (màu của bản nháp)
-                    Item {
-                        id: pv
-                        y: card.px(172)
-                        width: parent.width; height: card.px(118)
-                        readonly property var dv: root.curDerived
-                        Rectangle { anchors.fill: parent; color: pv.dv.paper; border.width: 1; border.color: pv.dv.ink }
-                        Text {
-                            anchors.right: parent.right; anchors.rightMargin: card.px(12); y: card.px(4)
-                            text: "墨"; color: pv.dv.rule
-                            font.family: root.fontKanji; font.pixelSize: card.fs(76)
-                        }
-                        Text {
-                            x: card.px(14); y: card.px(8)
-                            text: "KAKUNIN"; color: pv.dv.ink
-                            font.family: root.fontTitle; font.pixelSize: card.fs(30); font.bold: true
-                        }
-                        Text {
-                            x: card.px(14); y: card.px(50)
-                            text: "Đóng cửa sổ này?"; color: pv.dv.soft
-                            font.family: root.fontLabel; font.pixelSize: card.fs(15)
-                        }
-                        Rectangle {
-                            x: card.px(14); y: card.px(80); width: card.px(84); height: card.px(28); color: pv.dv.ink
-                            Text { anchors.centerIn: parent; text: "YES"; color: pv.dv.paper; font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true }
-                        }
-                        Rectangle {
-                            x: card.px(106); y: card.px(80); width: card.px(84); height: card.px(28); color: "transparent"
-                            border.width: 1; border.color: pv.dv.ink
-                            Text { anchors.centerIn: parent; text: "NO"; color: pv.dv.ink; font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true }
-                        }
-                        Rectangle {
-                            x: card.px(198); y: card.px(80); width: card.px(84); height: card.px(28); color: th.danger
-                            Text { anchors.centerIn: parent; text: "DANGER"; color: "white"; font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true }
-                        }
-                        Rectangle { x: card.px(290); y: card.px(93); width: card.px(40); height: card.px(2); color: pv.dv.ghostB }
-                    }
-
-                    // thanh TINT và INK DARKEN
-                    Repeater {
-                        model: [
-                            { key: "tint", label: "TINT", lo: 0, hi: 0.6, step: 0.02, nd: 2 },
-                            { key: "ink", label: "INK DARKEN", lo: 1, hi: 2.5, step: 0.1, nd: 1 }
-                        ]
+                    ListView {
+                        id: list
+                        y: card.px(38); width: parent.width
+                        height: Math.max(card.px(62), regPanel.y - dash.pg - card.px(38))
+                        clip: true
+                        interactive: false
+                        model: root.apps
+                        currentIndex: root.sel
+                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
                         delegate: Item {
-                            id: cr
+                            id: row
                             required property int index
                             required property var modelData
-                            readonly property real v: modelData.key === "tint" ? root.effTint : root.effInk
-                            readonly property bool isInh: modelData.key === "tint" ? root.draft.tint === null : root.draft.inkDarken === null
-                            y: card.px(302) + index * card.px(34)
-                            width: tr.width; height: card.px(34)
-                            opacity: root.tintEditable ? 1 : 0.35
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: cr.modelData.label; color: th.soft
-                                font.family: root.fontLabel; font.pixelSize: card.fs(14); font.letterSpacing: 1.5
-                            }
-                            Rectangle {
-                                x: card.px(130); anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(240); height: card.px(8)
-                                color: th.wash; border.width: 1; border.color: th.rule
-                                Rectangle {
-                                    width: parent.width * Math.max(0, Math.min(1, (cr.v - cr.modelData.lo) / (cr.modelData.hi - cr.modelData.lo)))
-                                    height: parent.height; color: th.ink
-                                }
-                            }
-                            Text {
-                                x: card.px(384); anchors.verticalCenter: parent.verticalCenter
-                                text: cr.v.toFixed(cr.modelData.nd) + (cr.isInh ? "  inh" : "")
-                                color: th.ink
-                                font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true
-                            }
-                            Rectangle {
-                                x: tr.width - card.px(64); anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(28); height: card.px(24); color: "transparent"; border.width: 1; border.color: th.ink
-                                Text { anchors.centerIn: parent; text: "-"; color: th.ink; font.family: root.fontData; font.pixelSize: card.fs(16); font.bold: true }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.nudge(cr.modelData.key, -cr.modelData.step) }
-                            }
-                            Rectangle {
-                                x: tr.width - card.px(30); anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(28); height: card.px(24); color: "transparent"; border.width: 1; border.color: th.ink
-                                Text { anchors.centerIn: parent; text: "+"; color: th.ink; font.family: root.fontData; font.pixelSize: card.fs(16); font.bold: true }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.nudge(cr.modelData.key, cr.modelData.step) }
-                            }
-                        }
-                    }
-                    Text {
-                        y: card.px(302) + card.px(34) * 2 - card.px(2)
-                        visible: !root.tintEditable
-                        text: "HUB dùng tint và độ đậm của GLOBAL"
-                        color: th.soft
-                        font.family: root.fontLabel; font.pixelSize: card.fs(12)
-                    }
-
-                    // tương phản + trạng thái áp dụng
-                    Rectangle { y: card.px(374); width: parent.width; height: 1; color: th.rule }
-                    Text {
-                        y: card.px(382)
-                        text: "CONTRAST  " + root.curDerived.contrast.toFixed(2) + " : 1   "
-                              + (root.blocked ? "BLOCKED (<4.5)" : (root.weak ? "WEAK (<7)" : "OK"))
-                        color: root.blocked ? th.danger : th.ink
-                        font.family: root.fontData; font.pixelSize: card.fs(15); font.bold: true
-                    }
-                    Text {
-                        y: card.px(404)
-                        width: parent.width; elide: Text.ElideRight
-                        text: root.applyErr !== "" ? (root.applyMsg + "  " + root.applyErr) : root.applyMsg
-                        color: root.applyOk ? th.ink : th.danger
-                        font.family: root.fontData; font.pixelSize: card.fs(13)
-                    }
-                }
-
-                // ---------- pane FONT (2b-2) ----------
-                Item {
-                    id: fr
-                    visible: root.page === "font"
-                    x: card.m + card.px(340) + card.px(30)
-                    y: card.px(76)
-                    width: card.width - x - card.m
-                    height: scopeList.height
-
-                    Rectangle { width: parent.width; height: 1; color: th.ink }
-                    Text {
-                        y: card.px(8)
-                        text: "FONT / " + root.scopeName
-                        color: th.ink
-                        font.family: root.fontTitle; font.pixelSize: card.fs(24); font.bold: true
-                    }
-                    Text {
-                        anchors.right: parent.right; y: card.px(14)
-                        text: root.fontDirty ? "DRAFT" : (root.scopeTag("font", root.scopeId) === "INHERIT" ? "INHERIT" : "SAVED")
-                        color: th.soft
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
-                    }
-
-                    Repeater {
-                        model: root.fontRows
-                        delegate: Item {
-                            id: frow
-                            required property int index
-                            required property string modelData
-                            readonly property bool on: index === root.fontSel
-                            readonly property bool own: root.fontDraft[modelData] !== null
-                            readonly property bool bad: root.fontMissing(modelData) || root.fontNoJa(modelData)
-                            y: card.px(48) + index * card.px(46)
-                            width: fr.width; height: card.px(46)
+                            readonly property bool on: index === root.sel
+                            width: list.width
+                            height: card.px(62)
                             Rectangle {
                                 anchors.fill: parent; anchors.bottomMargin: 1
-                                color: frow.on ? th.ink : (frm.containsMouse ? th.wash : "transparent")
+                                color: row.on ? th.ink : (rowMouse.containsMouse ? th.wash : "transparent")
                             }
-                            Text {
+                            Rectangle {
                                 x: card.px(14); anchors.verticalCenter: parent.verticalCenter
-                                text: frow.modelData.toUpperCase()
-                                color: frow.on ? th.paper : th.soft
-                                font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 1.5
+                                width: card.px(9); height: width
+                                color: row.modelData.running ? (row.on ? th.paper : th.ink) : "transparent"
+                                border.width: 1; border.color: row.on ? th.paper : th.soft
                             }
                             Text {
-                                x: card.px(112); anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - card.px(112) - card.px(110)
+                                x: card.px(36); y: card.px(10)
+                                width: parent.width - card.px(110)
                                 elide: Text.ElideRight
-                                text: root.fontShown(frow.modelData)
-                                color: frow.on ? th.paper : th.ink
-                                font.family: root.fam(frow.modelData); font.pixelSize: card.fs(20)
+                                text: root.titleOf(row.modelData)
+                                color: row.on ? th.paper : th.ink
+                                font.family: root.fontLabel; font.pixelSize: card.fs(20); font.bold: true
+                            }
+                            Text {
+                                x: card.px(36); y: card.px(37)
+                                text: (row.modelData.kind === "daemon" ? "DAEMON" : "ONESHOT") + " · " + (Array.isArray(row.modelData.functions) ? row.modelData.functions.length : 0) + " FN"
+                                color: row.on ? th.paper : th.soft
+                                font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1
                             }
                             Text {
                                 anchors.right: parent.right; anchors.rightMargin: card.px(14)
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: root.fontMissing(frow.modelData) ? "MISSING" : (root.fontNoJa(frow.modelData) ? "NO JA" : (frow.own ? "OWN" : "inh"))
-                                color: frow.bad ? th.danger : (frow.on ? th.paper : th.soft)
-                                font.family: root.fontData; font.pixelSize: card.fs(12); font.bold: frow.bad
+                                text: row.modelData.running ? "RUNNING" : ("v" + row.modelData.version)
+                                color: row.on ? th.paper : (row.modelData.running ? th.ink : th.soft)
+                                font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: row.modelData.running === true
                             }
                             MouseArea {
-                                id: frm
-                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: { if (root.fontSel === frow.index) root.openPicker(); else root.fontSel = frow.index }
+                                id: rowMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: { root.sel = row.index; root.fnSel = 0 }
                             }
                         }
                     }
 
-                    // xem trước bằng font của bản nháp (kiểm tra luôn dấu tiếng Việt và kanji)
+                    // REGISTRY
                     Item {
-                        y: card.px(48) + 5 * card.px(46) + card.px(8)
-                        width: parent.width; height: card.px(80)
-                        Rectangle { anchors.fill: parent; color: th.paper; border.width: 1; border.color: th.ink }
+                        id: regPanel
+                        y: logPanel.y - dash.pg - dash.regH
+                        width: parent.width; height: dash.regH
+                        Rectangle { width: parent.width; height: 1; color: th.ink }
                         Text {
-                            x: card.px(14); y: card.px(6)
-                            text: "KAKUNIN"; color: th.ink
-                            font.family: root.fam("title"); font.pixelSize: card.fs(28); font.bold: true
+                            x: card.px(2); y: card.px(10)
+                            text: "REGISTRY"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
                         Text {
-                            x: card.px(14); y: card.px(46)
-                            text: "Đóng cửa sổ này?"; color: th.soft
-                            font.family: root.fam("label"); font.pixelSize: card.fs(15)
+                            anchors.right: parent.right; y: card.px(10)
+                            text: "G  OPEN STORE"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                        }
+                        Repeater {
+                            model: [
+                                ["INSTALLED", String(root.apps.length)],
+                                ["RUNNING", String(root.runningCount)],
+                                ["APP UPDATES", root.noteApps > 0 ? String(root.noteApps) : "NONE"],
+                                ["CORE UPDATE", root.noteCore !== "" ? root.noteCore : "-"]
+                            ]
+                            delegate: Item {
+                                required property int index
+                                required property var modelData
+                                y: card.px(34) + index * card.px(24)
+                                width: regPanel.width; height: card.px(24)
+                                Text {
+                                    x: card.px(2); anchors.verticalCenter: parent.verticalCenter
+                                    text: modelData[0]; color: th.soft
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(13); font.letterSpacing: 1.5
+                                }
+                                Text {
+                                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    text: modelData[1]; color: th.ink
+                                    font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true
+                                }
+                                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: th.rule; opacity: 0.5 }
+                            }
+                        }
+                        MouseArea { anchors.fill: parent; z: -1; cursorShape: Qt.PointingHandCursor; onClicked: root.dashAct("G") }
+                    }
+
+                    // LOG
+                    Item {
+                        id: logPanel
+                        y: parent.height - dash.logH
+                        width: parent.width; height: dash.logH
+                        Rectangle { width: parent.width; height: 1; color: th.ink }
+                        Text {
+                            x: card.px(2); y: card.px(10)
+                            text: "LOG"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
                         Text {
-                            x: card.px(300); y: card.px(6)
-                            text: "確認 時限 墨"; color: th.ink
-                            font.family: root.fam("kanji"); font.pixelSize: card.fs(30)
+                            anchors.right: parent.right; y: card.px(10)
+                            text: "/TMP/SUMI.LOG"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                        }
+                        Column {
+                            y: card.px(34); width: parent.width
+                            Repeater {
+                                model: root.logLines
+                                delegate: Text {
+                                    required property var modelData
+                                    width: logPanel.width; height: card.px(20)
+                                    elide: Text.ElideRight
+                                    text: modelData; color: th.ink
+                                    font.family: root.fontData; font.pixelSize: card.fs(12)
+                                }
+                            }
                         }
                         Text {
-                            x: card.px(300); y: card.px(50)
-                            text: "[Y] YES  0x3F2A"; color: th.ink
-                            font.family: root.fam("data"); font.pixelSize: card.fs(14)
+                            x: card.px(2); y: card.px(36)
+                            visible: root.logLines.length === 0
+                            text: "NO LOG ENTRIES"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                         }
-                        Text {
-                            x: card.px(450); y: card.px(44)
-                            text: "T-12:34"; color: th.ink
-                            font.family: root.fam("numeral"); font.pixelSize: card.fs(22); font.bold: true
+                    }
+                }
+
+                // ===== cột B =====
+                Item {
+                    id: bCol
+                    x: card.wA + card.gg; width: card.wB; height: dash.height
+                    visible: root.cur !== null
+                    Rectangle { width: parent.width; height: 1; color: th.ink }
+                    ScrambleText {
+                        x: card.px(2); y: card.px(8)
+                        width: bCol.width - card.px(230); height: card.px(104)
+                        verticalAlignment: Text.AlignVCenter
+                        full: root.cur ? root.titleOf(root.cur) : ""
+                        active: root.cur !== null
+                        color: th.ink
+                        font.family: root.fontTitle; font.bold: true
+                        font.pixelSize: card.fs(76); fontSizeMode: Text.Fit; minimumPixelSize: card.fs(30)
+                    }
+                    ScrambleText {
+                        anchors.right: parent.right; y: card.px(2)
+                        full: root.cur ? root.cur.kanji : ""
+                        active: root.cur !== null
+                        color: th.rule
+                        font.family: root.fontKanji; font.pixelSize: card.fs(110)
+                    }
+                    Rectangle { y: card.px(122); width: parent.width; height: 1; color: th.ink }
+                    Text {
+                        y: card.px(134); width: parent.width; height: card.px(50)
+                        wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                        text: root.cur ? root.cur.description : ""
+                        color: th.ink
+                        font.family: root.fontLabel; font.pixelSize: card.fs(17)
+                    }
+
+                    // DETAILS: lưới 2 cột x 4 hàng
+                    Text {
+                        x: card.px(2); y: card.px(194)
+                        text: "DETAILS"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
+                    }
+                    Rectangle { y: card.px(216); width: parent.width; height: 1; color: th.rule }
+                    Repeater {
+                        model: root.curInfo
+                        delegate: Item {
+                            required property int index
+                            required property var modelData
+                            readonly property real cw: (bCol.width - card.px(40)) / 2
+                            x: (index % 2) * (cw + card.px(40))
+                            y: card.px(222) + Math.floor(index / 2) * card.px(34)
+                            width: cw; height: card.px(34)
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: modelData[0]; color: th.soft
+                                font.family: root.fontLabel; font.pixelSize: card.fs(14); font.letterSpacing: 1.5
+                            }
+                            Text {
+                                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width - card.px(130); horizontalAlignment: Text.AlignRight; elide: Text.ElideLeft
+                                text: modelData[1]; color: th.ink
+                                font.family: root.fontData; font.pixelSize: card.fs(15); font.bold: true
+                            }
+                            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: th.rule; opacity: 0.6 }
                         }
                     }
 
-                    Rectangle { y: card.px(374); width: parent.width; height: 1; color: th.rule }
+                    // FUNCTIONS: thẻ chọn bằng A/D
                     Text {
-                        y: card.px(382)
-                        width: parent.width; elide: Text.ElideRight
-                        text: root.fontWarn !== "" ? root.fontWarn : (root.fontListLoaded ? (root.fontList.length + " FONTS INSTALLED") : "LOADING FONT LIST...")
-                        color: root.fontWarn !== "" ? th.danger : th.ink
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: root.fontWarn !== ""
+                        x: card.px(2); y: card.px(374)
+                        text: root.cur && root.cur.kind === "daemon" ? "FUNCTIONS" : "TEST RUN"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                     }
                     Text {
-                        y: card.px(404)
-                        width: parent.width; elide: Text.ElideRight
-                        text: root.applyErr !== "" ? (root.applyMsg + "  " + root.applyErr) : root.applyMsg
-                        color: root.applyOk ? th.ink : th.danger
-                        font.family: root.fontData; font.pixelSize: card.fs(13)
+                        anchors.right: parent.right; y: card.px(374)
+                        visible: root.cur !== null && root.cur.kind === "daemon"
+                        text: "A / D  SELECT"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                    }
+                    Row {
+                        y: card.px(398)
+                        spacing: card.px(12)
+                        visible: root.cur !== null && root.cur.kind === "daemon"
+                        Repeater {
+                            model: root.curFns
+                            delegate: Rectangle {
+                                id: fcard
+                                required property int index
+                                required property var modelData
+                                readonly property bool on: index === root.fnSel
+                                width: Math.min(card.px(260), (bCol.width - (root.curFns.length - 1) * card.px(12)) / Math.max(1, root.curFns.length))
+                                height: card.px(92)
+                                color: on ? th.ink : (fmouse.containsMouse ? th.wash : "transparent")
+                                border.width: 1; border.color: th.ink
+                                Text {
+                                    x: card.px(14); y: card.px(10)
+                                    width: parent.width - card.px(60); elide: Text.ElideRight
+                                    text: fcard.modelData.label
+                                    color: fcard.on ? th.paper : th.ink
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(24); font.bold: true; font.letterSpacing: 1
+                                }
+                                Text {
+                                    anchors.right: parent.right; anchors.rightMargin: card.px(12); y: card.px(14)
+                                    text: (fcard.index < 9 ? "0" : "") + (fcard.index + 1)
+                                    color: fcard.on ? th.paper : th.soft
+                                    font.family: root.fontData; font.pixelSize: card.fs(13)
+                                }
+                                Text {
+                                    x: card.px(14); y: card.px(50)
+                                    text: "OBJECT   " + root.fnObjId(root.cur, fcard.modelData).toUpperCase()
+                                    color: fcard.on ? th.paper : th.ink
+                                    font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 1
+                                }
+                                Text {
+                                    x: card.px(14); y: card.px(68)
+                                    text: "IPC      " + fcard.modelData.ipc_name
+                                    color: fcard.on ? th.paper : th.soft
+                                    font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1
+                                }
+                                MouseArea {
+                                    id: fmouse
+                                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.fnSel = fcard.index
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        y: card.px(398); width: parent.width; height: card.px(92)
+                        visible: root.cur !== null && root.cur.kind !== "daemon"
+                        color: "transparent"; border.width: 1; border.color: th.ink
+                        Text {
+                            x: card.px(14); y: card.px(12)
+                            text: "ONESHOT DIALOG"; color: th.ink
+                            font.family: root.fontLabel; font.pixelSize: card.fs(22); font.bold: true; font.letterSpacing: 1
+                        }
+                        Text {
+                            x: card.px(14); y: card.px(48); width: parent.width - card.px(28)
+                            wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                            text: "Enter mở thử dialog với dữ liệu mẫu (thoát mã 0 = Yes, 1 = No)."
+                            color: th.soft
+                            font.family: root.fontLabel; font.pixelSize: card.fs(15)
+                        }
+                    }
+
+                    // KEYBINDS của app (phím hiệu lực = mặc định + phần người dùng đổi)
+                    Text {
+                        x: card.px(2); y: card.px(508)
+                        text: "KEYBINDS"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
+                    }
+                    Text {
+                        anchors.right: parent.right; y: card.px(508)
+                        text: "K  EDIT"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                    }
+                    Flow {
+                        y: card.px(532); width: parent.width; height: card.px(84)
+                        spacing: card.px(8)
+                        clip: true
+                        Repeater {
+                            model: root.curKeys
+                            delegate: Rectangle {
+                                id: kcap
+                                required property var modelData
+                                height: card.px(36)
+                                width: kcKey.width + kcLab.width + card.px(22)
+                                color: "transparent"; border.width: 1; border.color: th.ink
+                                Rectangle {
+                                    id: kcKey
+                                    height: parent.height; width: kcKeyT.width + card.px(18)
+                                    color: th.ink
+                                    Text {
+                                        id: kcKeyT
+                                        anchors.centerIn: parent
+                                        text: kcap.modelData.key.toUpperCase(); color: th.paper
+                                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true
+                                    }
+                                }
+                                Text {
+                                    id: kcLab
+                                    x: kcKey.width + card.px(10); anchors.verticalCenter: parent.verticalCenter
+                                    text: kcap.modelData.label; color: th.ink
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(13); font.letterSpacing: 1
+                                }
+                            }
+                        }
+                    }
+
+                    // RUN: thanh mực vát góc
+                    Item {
+                        id: runBar
+                        y: parent.height - card.px(60); width: parent.width; height: card.px(60)
+                        Shape {
+                            anchors.fill: parent
+                            ShapePath {
+                                id: runSP
+                                readonly property real c: card.px(20)
+                                fillColor: runMouse.containsMouse ? th.soft : th.ink
+                                strokeColor: th.ink
+                                strokeWidth: 1
+                                startX: 0; startY: 0
+                                PathLine { x: runBar.width; y: 0 }
+                                PathLine { x: runBar.width; y: runBar.height - runSP.c }
+                                PathLine { x: runBar.width - runSP.c; y: runBar.height }
+                                PathLine { x: 0; y: runBar.height }
+                                PathLine { x: 0; y: 0 }
+                            }
+                        }
+                        Text {
+                            x: card.px(18); anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - card.px(150); elide: Text.ElideRight
+                            text: root.runLabel
+                            color: th.paper
+                            font.family: root.fontLabel; font.pixelSize: card.fs(22); font.bold: true; font.letterSpacing: 2
+                        }
+                        Text {
+                            anchors.right: parent.right; anchors.rightMargin: card.px(40); anchors.verticalCenter: parent.verticalCenter
+                            text: "ENTER"; color: th.paper
+                            font.family: root.fontData; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 2
+                        }
+                        MouseArea {
+                            id: runMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.dashAct("RUN")
+                        }
+                    }
+                }
+
+                // trạng thái rỗng / lỗi (không có app)
+                Text {
+                    x: card.wA + card.gg; y: card.px(20); width: card.wB
+                    visible: root.cur === null
+                    wrapMode: Text.WordWrap
+                    text: root.errorText !== "" ? root.errorText : "KHÔNG CÓ APP NÀO ĐÃ CÀI   (G: STORE)"
+                    color: th.ink
+                    font.family: root.fontLabel; font.pixelSize: card.fs(22); font.bold: true
+                }
+                Text {
+                    x: card.wA + card.gg; y: card.px(120); width: card.wB
+                    visible: root.cur !== null && root.errorText !== ""
+                    wrapMode: Text.WordWrap
+                    text: root.errorText; color: th.danger
+                    font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true
+                }
+
+                // ===== cột C =====
+                Item {
+                    id: cCol
+                    x: card.wA + card.wB + 2 * card.gg; width: card.wC; height: dash.height
+                    Rectangle { width: parent.width; height: 1; color: th.ink }
+
+                    // SYSTEM (số liệu thật, làm mới mỗi 2 giây khi đang ở trang APPS)
+                    Item {
+                        id: sysPanel
+                        y: card.dashPvY + card.pvH + card.gg
+                        width: parent.width; height: card.px(184)
+                        Rectangle { width: parent.width; height: 1; color: th.ink }
+                        Text {
+                            x: card.px(2); y: card.px(10)
+                            text: "SYSTEM"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
+                        }
+                        Text {
+                            anchors.right: parent.right; y: card.px(10)
+                            text: "EVERY 2 S"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                        }
+                        Repeater {
+                            model: [
+                                { k: "MEM", v: root.sysMem, t: root.sysMemText !== "" ? root.sysMemText : "-", bar: root.sysMem >= 0, alert: root.sysMem > 0.9 },
+                                { k: "BAT", v: root.sysBat >= 0 ? root.sysBat / 100 : 0, t: root.sysBat >= 0 ? (root.sysBat + "%  " + root.sysBatState.toUpperCase()) : "NO BATTERY", bar: root.sysBat >= 0, alert: root.sysBat >= 0 && root.sysBat <= 15 },
+                                { k: "TEMP", v: root.sysTemp >= 0 ? Math.min(1, root.sysTemp / 100) : 0, t: root.sysTemp >= 0 ? (root.sysTemp + " C  MAX SENSOR") : "-", bar: root.sysTemp >= 0, alert: root.sysTemp >= 85 },
+                                { k: "LOAD", v: 0, t: root.sysLoad !== "" ? root.sysLoad : "-", bar: false, alert: false },
+                                { k: "UPTIME", v: 0, t: root.fmtUp(root.sysUp), bar: false, alert: false }
+                            ]
+                            delegate: Item {
+                                id: srow2
+                                required property int index
+                                required property var modelData
+                                y: card.px(34) + index * card.px(30)
+                                width: sysPanel.width; height: card.px(30)
+                                Text {
+                                    x: card.px(2); anchors.verticalCenter: parent.verticalCenter
+                                    text: srow2.modelData.k; color: th.soft
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(13); font.letterSpacing: 1.5
+                                }
+                                PixelBar {
+                                    x: card.px(76); anchors.verticalCenter: parent.verticalCenter
+                                    width: srow2.width - card.px(76) - card.px(156); height: card.px(10)
+                                    visible: srow2.modelData.bar
+                                    value: srow2.modelData.v; cells: 20
+                                    litColor: th.ink; dimColor: th.rule; alertColor: th.danger
+                                    alert: srow2.modelData.alert
+                                }
+                                Text {
+                                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    width: card.px(150); horizontalAlignment: Text.AlignRight; elide: Text.ElideRight
+                                    text: srow2.modelData.t
+                                    color: srow2.modelData.alert ? th.danger : th.ink
+                                    font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true
+                                }
+                                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: th.rule; opacity: 0.4 }
+                            }
+                        }
+                    }
+
+                    // KEYS: phím tắt của trang APPS (bấm chuột cũng được)
+                    Item {
+                        id: keyPanel
+                        y: sysPanel.y + sysPanel.height + card.gg
+                        width: parent.width; height: card.px(202)
+                        Rectangle { width: parent.width; height: 1; color: th.ink }
+                        Text {
+                            x: card.px(2); y: card.px(10)
+                            text: "SHORTCUTS"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
+                        }
+                        Text {
+                            anchors.right: parent.right; y: card.px(10)
+                            text: "W/S APP"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                        }
+                        Repeater {
+                            model: [["TAB", "SETTINGS"], ["G", "STORE"], ["T", "THEME"], ["F", "FONT"], ["K", "KEYS"], ["O", "OPTION"], ["ENTER", "RUN"], ["ESC", "CLOSE"]]
+                            delegate: Rectangle {
+                                id: skey
+                                required property int index
+                                required property var modelData
+                                readonly property real cw: (keyPanel.width - card.px(8)) / 2
+                                x: (index % 2) * (cw + card.px(8))
+                                y: card.px(34) + Math.floor(index / 2) * card.px(42)
+                                width: cw; height: card.px(36)
+                                color: skm.containsMouse ? th.wash : "transparent"
+                                border.width: 1; border.color: th.ink
+                                Rectangle {
+                                    id: skKey
+                                    height: parent.height; width: card.px(52)
+                                    color: th.ink
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: skey.modelData[0]; color: th.paper
+                                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true
+                                    }
+                                }
+                                Text {
+                                    x: skKey.width + card.px(12); anchors.verticalCenter: parent.verticalCenter
+                                    text: skey.modelData[1]; color: th.ink
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(14); font.bold: true; font.letterSpacing: 1.5
+                                }
+                                MouseArea {
+                                    id: skm
+                                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.dashAct(skey.modelData[0])
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------- SETTINGS: một màn hình cho mỗi phạm vi (THEME / FONT / KEYS / OPTIONS gồm OBJECTS) ----------
+            Item {
+                id: tp
+                visible: root.inSettings
+                x: card.gx; y: card.gy; width: card.gw; height: card.gh
+                readonly property real pg: card.px(22)
+                readonly property real secH: card.px(34) + 4 * card.px(32)
+                readonly property real stH: card.px(98)
+
+                // ===== cột A: phạm vi, section, trạng thái =====
+                Item {
+                    id: sCol
+                    width: card.wA; height: tp.height
+                    Rectangle { width: parent.width; height: 1; color: th.ink }
+                    Text {
+                        x: card.px(2); y: card.px(10)
+                        text: "SCOPE"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
+                    }
+                    Text {
+                        anchors.right: parent.right; y: card.px(8)
+                        text: "Q / E"; color: th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                    }
+                    ListView {
+                        id: scopeList
+                        y: card.px(38); width: parent.width
+                        height: Math.max(card.px(52), secPanel.y - tp.pg - card.px(38))
+                        clip: true
+                        interactive: false
+                        model: root.scopes
+                        currentIndex: root.scopeSel
+                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                        delegate: Item {
+                            id: srow
+                            required property int index
+                            required property var modelData
+                            readonly property bool on: index === root.scopeSel
+                            width: scopeList.width
+                            height: card.px(52)
+                            Rectangle {
+                                anchors.fill: parent; anchors.bottomMargin: 1
+                                color: srow.on ? th.ink : (smouse.containsMouse ? th.wash : "transparent")
+                            }
+                            Text {
+                                x: card.px(14); anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width - card.px(110)
+                                elide: Text.ElideRight
+                                text: srow.modelData.name
+                                color: srow.on ? th.paper : th.ink
+                                font.family: root.fontLabel; font.pixelSize: card.fs(19); font.bold: true
+                            }
+                            Text {
+                                anchors.right: parent.right; anchors.rightMargin: card.px(14)
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.scopeTag(srow.modelData.id)
+                                color: srow.on ? th.paper : th.soft
+                                font.family: root.fontData; font.pixelSize: card.fs(12)
+                            }
+                            MouseArea {
+                                id: smouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.setScope(srow.index)
+                            }
+                        }
+                    }
+
+                    // SECTIONS: nhảy nhanh (1..4 hoặc Tab)
+                    Item {
+                        id: secPanel
+                        y: stPanel.y - tp.pg - tp.secH
+                        width: parent.width; height: tp.secH
+                        Rectangle { width: parent.width; height: 1; color: th.ink }
+                        Text {
+                            x: card.px(2); y: card.px(10)
+                            text: "SECTIONS"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
+                        }
+                        Text {
+                            anchors.right: parent.right; y: card.px(10)
+                            text: "TAB"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                        }
+                        Repeater {
+                            model: root.secIds
+                            delegate: Item {
+                                id: scr
+                                required property int index
+                                required property string modelData
+                                readonly property bool avail: root.secCount(modelData) > 0
+                                readonly property bool on: avail && modelData === root.page
+                                y: card.px(34) + index * card.px(32)
+                                width: secPanel.width; height: card.px(32)
+                                Rectangle {
+                                    anchors.fill: parent; anchors.bottomMargin: 1
+                                    color: scr.on ? th.ink : (scm.containsMouse && scr.avail ? th.wash : "transparent")
+                                }
+                                Text {
+                                    x: card.px(12); anchors.verticalCenter: parent.verticalCenter
+                                    text: (scr.avail ? (root.secList.indexOf(scr.modelData) + 1) : "-") + "  " + root.secTitle(scr.modelData)
+                                    color: scr.on ? th.paper : (scr.avail ? th.ink : th.rule)
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 1
+                                }
+                                Text {
+                                    anchors.right: parent.right; anchors.rightMargin: card.px(12)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: !scr.avail ? "N/A" : (root.tabDirty(scr.modelData) ? "DRAFT" : "")
+                                    color: scr.on ? th.paper : th.soft
+                                    font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1
+                                }
+                                MouseArea {
+                                    id: scm
+                                    anchors.fill: parent; hoverEnabled: true; cursorShape: scr.avail ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    onClicked: if (scr.avail) root.focusRow(scr.modelData, root.secSel(scr.modelData))
+                                }
+                            }
+                        }
+                    }
+
+                    // STATUS
+                    Item {
+                        id: stPanel
+                        y: parent.height - tp.stH
+                        width: parent.width; height: tp.stH
+                        Rectangle { width: parent.width; height: 1; color: th.ink }
+                        Text {
+                            x: card.px(2); y: card.px(10)
+                            text: "STATUS"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
+                        }
+                        Text {
+                            anchors.right: parent.right; y: card.px(10)
+                            text: "SPACE  APPLY"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                        }
+                        Repeater {
+                            model: [
+                                ["DRAFT", root.dirtyList.length > 0 ? root.dirtyList.join(" + ").toUpperCase() : "NONE", root.dirtyList.length > 0],
+                                ["LAST APPLY", root.applyMsg !== "" ? root.applyMsg : "-", root.applyMsg !== "" && !root.applyOk]
+                            ]
+                            delegate: Item {
+                                required property int index
+                                required property var modelData
+                                y: card.px(34) + index * card.px(28)
+                                width: stPanel.width; height: card.px(28)
+                                Text {
+                                    x: card.px(2); anchors.verticalCenter: parent.verticalCenter
+                                    text: modelData[0]; color: th.soft
+                                    font.family: root.fontLabel; font.pixelSize: card.fs(13); font.letterSpacing: 1.5
+                                }
+                                Text {
+                                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - card.px(110); horizontalAlignment: Text.AlignRight; elide: Text.ElideLeft
+                                    text: modelData[1]
+                                    color: modelData[2] ? th.danger : th.ink
+                                    font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true
+                                }
+                                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: th.rule; opacity: 0.5 }
+                            }
+                        }
+                    }
+                }
+
+                // ===== cột B: danh sách hàng theo section =====
+                Item {
+                    id: sMain
+                    x: card.wA + card.gg; width: card.wB; height: tp.height
+                    Rectangle { width: parent.width; height: 1; color: th.ink }
+                    Text {
+                        x: card.px(2); y: card.px(6)
+                        width: parent.width - card.px(140); elide: Text.ElideRight
+                        text: "SETTINGS / " + root.scopeName; color: th.ink
+                        font.family: root.fontTitle; font.pixelSize: card.fs(28); font.bold: true
+                    }
+                    Text {
+                        anchors.right: parent.right; y: card.px(14)
+                        text: root.anyDirty ? "DRAFT" : "SAVED"; color: root.anyDirty ? th.danger : th.soft
+                        font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2; font.bold: root.anyDirty
+                    }
+                    ListView {
+                        id: setList
+                        y: card.px(52); width: parent.width; height: parent.height - card.px(52)
+                        clip: true
+                        interactive: false
+                        boundsBehavior: Flickable.StopAtBounds
+                        model: root.viewRows
+                        currentIndex: root.viewSel
+                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                        delegate: Item {
+                            id: sr
+                            required property int index
+                            required property var modelData
+                            readonly property string sec: modelData.sec
+                            readonly property int idx: modelData.i
+                            readonly property bool isHead: modelData.kind === "head"
+                            readonly property bool on: !isHead && sec === root.page && idx === root.secSel(sec)
+                            width: setList.width
+                            height: isHead ? card.px(40) : (sec === "theme" ? (idx === 0 ? card.px(128) : card.px(44)) : (sec === "font" ? card.px(46) : card.px(38)))
+                            Loader {
+                                anchors.fill: parent
+                                sourceComponent: sr.isHead ? headC : (sr.sec === "theme" ? (sr.idx === 0 ? presetC : sliderC) : (sr.sec === "font" ? fontC : (sr.sec === "keys" ? keyC : optC)))
+                            }
+
+                            // --- tiêu đề section ---
+                            Component {
+                                id: headC
+                                Item {
+                                    Text {
+                                        x: card.px(2); anchors.bottom: parent.bottom; anchors.bottomMargin: card.px(6)
+                                        text: root.secTitle(sr.sec); color: th.ink
+                                        font.family: root.fontLabel; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 3
+                                    }
+                                    Text {
+                                        anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.bottomMargin: card.px(7)
+                                        text: root.tabDirty(sr.sec) ? "DRAFT" : "SAVED"
+                                        color: root.tabDirty(sr.sec) ? th.danger : th.soft
+                                        font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 2
+                                    }
+                                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: th.ink }
+                                }
+                            }
+
+                            // --- THEME: 6 thẻ preset ---
+                            Component {
+                                id: presetC
+                                Item {
+                                    Rectangle {
+                                        visible: sr.on
+                                        x: 0; y: card.px(6); width: card.px(5); height: parent.height - card.px(12); color: th.ink
+                                    }
+                                    Row {
+                                        x: card.px(14); y: card.px(8)
+                                        spacing: card.px(8)
+                                        Repeater {
+                                            model: ce.themes
+                                            delegate: Item {
+                                                id: pc
+                                                required property int index
+                                                required property string modelData
+                                                readonly property var dv: th.derive(modelData, root.effTint, root.effInk)
+                                                readonly property bool cur: modelData === root.effTheme
+                                                readonly property bool bad: dv.contrast < th.minContrast
+                                                readonly property bool weak: !bad && dv.contrast < th.goodContrast
+                                                width: Math.floor((sr.width - card.px(14) - 5 * card.px(8)) / 6)
+                                                height: card.px(112)
+                                                Rectangle {
+                                                    anchors.fill: parent
+                                                    color: pc.dv.paper
+                                                    border.width: pc.cur ? 3 : 1
+                                                    border.color: pc.cur ? th.ink : th.rule
+                                                    opacity: pc.bad ? 0.55 : 1
+                                                }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(6)
+                                                    text: root.presetKanji(pc.modelData); color: pc.dv.ink
+                                                    font.family: root.fontKanji; font.pixelSize: card.fs(34)
+                                                }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(54)
+                                                    width: parent.width - card.px(6); horizontalAlignment: Text.AlignHCenter
+                                                    elide: Text.ElideRight
+                                                    text: pc.modelData.toUpperCase(); color: pc.dv.ink
+                                                    font.family: root.fontLabel; font.pixelSize: card.fs(11); font.bold: true
+                                                }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(72)
+                                                    text: pc.dv.contrast.toFixed(1) + (pc.bad ? " ✕" : (pc.weak ? " !" : ""))
+                                                    color: pc.dv.soft
+                                                    font.family: root.fontData; font.pixelSize: card.fs(11)
+                                                }
+                                                Row {
+                                                    anchors.horizontalCenter: parent.horizontalCenter; y: card.px(94)
+                                                    spacing: card.px(2)
+                                                    Rectangle { width: card.px(14); height: card.px(6); color: pc.dv.ink }
+                                                    Rectangle { width: card.px(14); height: card.px(6); color: pc.dv.soft }
+                                                    Rectangle { width: card.px(14); height: card.px(6); color: pc.dv.rule }
+                                                }
+                                                MouseArea {
+                                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                                    onClicked: { root.focusRow("theme", 0); root.setPreset(pc.modelData) }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // --- THEME: TINT và INK DARKEN ---
+                            Component {
+                                id: sliderC
+                                Item {
+                                    id: sl2
+                                    readonly property var spec: sr.idx === 1 ? ({ key: "tint", label: "TINT", lo: 0, hi: 0.6, step: 0.02, nd: 2 }) : ({ key: "ink", label: "INK DARKEN", lo: 1, hi: 2.5, step: 0.1, nd: 1 })
+                                    readonly property real v: sr.idx === 1 ? root.effTint : root.effInk
+                                    readonly property bool isInh: sr.idx === 1 ? root.draft.tint === null : root.draft.inkDarken === null
+                                    opacity: root.tintEditable ? 1 : 0.35
+                                    Rectangle {
+                                        anchors.fill: parent; anchors.bottomMargin: 1
+                                        color: sr.on ? th.ink : (slm.containsMouse ? th.wash : "transparent")
+                                    }
+                                    Text {
+                                        x: card.px(14); anchors.verticalCenter: parent.verticalCenter
+                                        text: sl2.spec.label; color: sr.on ? th.paper : th.soft
+                                        font.family: root.fontLabel; font.pixelSize: card.fs(14); font.letterSpacing: 1.5
+                                    }
+                                    Rectangle {
+                                        x: card.px(150); anchors.verticalCenter: parent.verticalCenter
+                                        width: parent.width - card.px(150) - card.px(190); height: card.px(8)
+                                        color: sr.on ? th.paper : th.wash; border.width: 1; border.color: sr.on ? th.paper : th.rule
+                                        Rectangle {
+                                            width: parent.width * Math.max(0, Math.min(1, (sl2.v - sl2.spec.lo) / (sl2.spec.hi - sl2.spec.lo)))
+                                            height: parent.height; color: sr.on ? th.ink : th.ink
+                                        }
+                                    }
+                                    Text {
+                                        anchors.right: parent.right; anchors.rightMargin: card.px(14)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: card.px(150); horizontalAlignment: Text.AlignRight
+                                        text: sl2.v.toFixed(sl2.spec.nd) + (sl2.isInh ? "  inh" : "")
+                                        color: sr.on ? th.paper : th.ink
+                                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: true
+                                    }
+                                    MouseArea {
+                                        id: slm
+                                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.focusRow("theme", sr.idx)
+                                    }
+                                }
+                            }
+
+                            // --- FONT ---
+                            Component {
+                                id: fontC
+                                Item {
+                                    id: fr2
+                                    readonly property string role: root.fontRows[sr.idx] !== undefined ? root.fontRows[sr.idx] : ""
+                                    readonly property bool own: role !== "" && root.fontDraft[role] !== null
+                                    readonly property bool bad: role !== "" && (root.fontMissing(role) || root.fontNoJa(role))
+                                    Rectangle {
+                                        anchors.fill: parent; anchors.bottomMargin: 1
+                                        color: sr.on ? th.ink : (frm.containsMouse ? th.wash : "transparent")
+                                    }
+                                    Text {
+                                        x: card.px(14); anchors.verticalCenter: parent.verticalCenter
+                                        text: fr2.role.toUpperCase()
+                                        color: sr.on ? th.paper : th.soft
+                                        font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 1.5
+                                    }
+                                    Text {
+                                        x: card.px(124); anchors.verticalCenter: parent.verticalCenter
+                                        width: parent.width - card.px(124) - card.px(100)
+                                        elide: Text.ElideRight
+                                        text: fr2.role !== "" ? root.fontShown(fr2.role) : ""
+                                        color: sr.on ? th.paper : th.ink
+                                        font.family: fr2.role !== "" ? root.fam(fr2.role) : root.fontLabel; font.pixelSize: card.fs(20)
+                                    }
+                                    Text {
+                                        anchors.right: parent.right; anchors.rightMargin: card.px(14)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: fr2.role === "" ? "" : (root.fontMissing(fr2.role) ? "MISSING" : (root.fontNoJa(fr2.role) ? "NO JA" : (fr2.own ? "OWN" : "inh")))
+                                        color: fr2.bad ? th.danger : (sr.on ? th.paper : th.soft)
+                                        font.family: root.fontData; font.pixelSize: card.fs(12); font.bold: fr2.bad
+                                    }
+                                    MouseArea {
+                                        id: frm
+                                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: { if (sr.on) root.openPicker(); else root.focusRow("font", sr.idx) }
+                                    }
+                                }
+                            }
+
+                            // --- KEYS ---
+                            Component {
+                                id: keyC
+                                Item {
+                                    id: kr2
+                                    readonly property var kb: root.kbList[sr.idx] !== undefined ? root.kbList[sr.idx] : ({ action: "", label: "", default: "", locked: false })
+                                    readonly property bool locked: kb.locked === true
+                                    readonly property bool changed: !locked && root.keyDraft[kb.action] !== undefined
+                                    readonly property bool conf: root.keyConf[kb.action] !== undefined
+                                    readonly property bool capHere: sr.on && root.capturing
+                                    Rectangle {
+                                        anchors.fill: parent; anchors.bottomMargin: 1
+                                        color: sr.on ? th.ink : (krm.containsMouse ? th.wash : "transparent")
+                                    }
+                                    Text {
+                                        x: card.px(14); anchors.verticalCenter: parent.verticalCenter
+                                        width: card.px(180); elide: Text.ElideRight
+                                        text: String(kr2.kb.label).toUpperCase()
+                                        color: sr.on ? th.paper : th.ink
+                                        font.family: root.fontLabel; font.pixelSize: card.fs(16); font.bold: true
+                                    }
+                                    Text {
+                                        x: card.px(206); anchors.verticalCenter: parent.verticalCenter
+                                        text: kr2.kb.action
+                                        color: sr.on ? th.paper : th.soft
+                                        font.family: root.fontData; font.pixelSize: card.fs(12)
+                                    }
+                                    Text {
+                                        anchors.right: kcap2.left; anchors.rightMargin: card.px(10)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: kr2.locked ? "LOCK" : (kr2.changed ? ("def " + kr2.kb.default) : "")
+                                        color: sr.on ? th.paper : th.soft
+                                        font.family: root.fontData; font.pixelSize: card.fs(12)
+                                    }
+                                    Rectangle {
+                                        id: kcap2
+                                        anchors.right: parent.right; anchors.rightMargin: card.px(12)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: card.px(112); height: card.px(26)
+                                        color: kr2.capHere ? th.paper : "transparent"
+                                        border.width: kr2.conf ? 2 : 1
+                                        border.color: kr2.conf ? th.danger : (sr.on ? th.paper : th.ink)
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: kr2.capHere ? "PRESS KEY" : String(root.keyShown(kr2.kb)).toUpperCase()
+                                            color: kr2.capHere ? th.ink : (sr.on ? th.paper : th.ink)
+                                            font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true
+                                        }
+                                    }
+                                    MouseArea {
+                                        id: krm
+                                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: { if (sr.on) root.startCapture(); else root.focusRow("keys", sr.idx) }
+                                    }
+                                }
+                            }
+
+                            // --- OPTIONS (gồm OBJECTS của từng function) ---
+                            Component {
+                                id: optC
+                                Item {
+                                    id: or2
+                                    readonly property var o: root.optList[sr.idx] !== undefined ? root.optList[sr.idx] : ({ key: "", label: "", type: "bool", default: false, locked: false })
+                                    readonly property bool locked: o.locked === true
+                                    readonly property bool changed: !locked && root.optDraft[o.key] !== undefined
+                                    readonly property bool conf: root.optConf[o.key] !== undefined
+                                    readonly property bool editHere: sr.on && root.optEditing
+                                    Rectangle {
+                                        anchors.fill: parent; anchors.bottomMargin: 1
+                                        color: sr.on ? th.ink : (orm.containsMouse ? th.wash : "transparent")
+                                    }
+                                    Text {
+                                        x: card.px(14); anchors.verticalCenter: parent.verticalCenter
+                                        width: parent.width - card.px(14) - card.px(210) - card.px(150); elide: Text.ElideRight
+                                        text: or2.o.label
+                                        color: sr.on ? th.paper : th.ink
+                                        font.family: root.fontLabel; font.pixelSize: card.fs(15); font.bold: true
+                                    }
+                                    Text {
+                                        anchors.right: ocap2.left; anchors.rightMargin: card.px(10)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: card.px(140); horizontalAlignment: Text.AlignRight; elide: Text.ElideRight
+                                        text: or2.locked ? "LOCK" : (or2.changed ? ("def " + ce.optFormat(or2.o, or2.o.default)) : "")
+                                        color: sr.on ? th.paper : th.soft
+                                        font.family: root.fontData; font.pixelSize: card.fs(12)
+                                    }
+                                    Rectangle {
+                                        id: ocap2
+                                        anchors.right: parent.right; anchors.rightMargin: card.px(12)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: card.px(196); height: card.px(26)
+                                        color: or2.editHere ? th.paper : "transparent"
+                                        border.width: or2.conf ? 2 : 1
+                                        border.color: or2.conf ? th.danger : (sr.on ? th.paper : th.ink)
+                                        Text {
+                                            anchors.fill: parent; anchors.leftMargin: card.px(6); anchors.rightMargin: card.px(6)
+                                            verticalAlignment: Text.AlignVCenter
+                                            horizontalAlignment: or2.editHere ? Text.AlignLeft : Text.AlignHCenter
+                                            elide: or2.editHere ? Text.ElideLeft : Text.ElideRight
+                                            text: or2.editHere ? (root.optBuf + "_") : ce.optFormat(or2.o, root.optShown(or2.o))
+                                            color: or2.editHere ? th.ink : (sr.on ? th.paper : th.ink)
+                                            font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true
+                                        }
+                                    }
+                                    MouseArea {
+                                        id: orm
+                                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (sr.on) { if (!root.optEditing) root.enterOpt() }
+                                            else root.focusRow("options", sr.idx)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // ----- bộ chọn font: gõ để lọc, mũi tên để chọn -----
@@ -1654,7 +2403,7 @@ ShellRoot {
                         id: pk
                         visible: root.pickOpen
                         z: 5
-                        y: card.px(40); width: parent.width; height: card.px(332)
+                        y: card.px(52); width: parent.width; height: Math.min(parent.height - card.px(52), card.px(430))
                         color: th.paper; border.width: 2; border.color: th.ink
                         readonly property var curItem: root.pickItems.length > 0 ? root.pickItems[Math.max(0, Math.min(root.pickIdx, root.pickItems.length - 1))] : null
                         readonly property string inhFam: {
@@ -1683,7 +2432,7 @@ ShellRoot {
                         ListView {
                             id: pkList
                             x: card.px(8); y: card.px(58)
-                            width: parent.width - card.px(16); height: card.px(210)
+                            width: parent.width - card.px(16); height: pk.height - card.px(58) - card.px(64)
                             clip: true
                             boundsBehavior: Flickable.StopAtBounds
                             model: root.pickItems
@@ -1718,9 +2467,9 @@ ShellRoot {
                                 }
                             }
                         }
-                        Rectangle { x: card.px(14); y: card.px(272); width: parent.width - card.px(28); height: 1; color: th.rule }
+                        Rectangle { x: card.px(14); y: pk.height - card.px(58); width: parent.width - card.px(28); height: 1; color: th.rule }
                         Text {
-                            x: card.px(14); y: card.px(282); width: parent.width - card.px(28)
+                            x: card.px(14); y: pk.height - card.px(46); width: parent.width - card.px(28)
                             elide: Text.ElideRight
                             text: "Aa Đóng cửa sổ 0123 [Y] 墨紙 確認"; color: th.ink
                             font.family: pk.prevFam; font.pixelSize: card.fs(22)
@@ -1728,221 +2477,56 @@ ShellRoot {
                     }
                 }
 
-                // ---------- pane KEYS (2b-2) ----------
+                // ===== cột C: preview (pvFrame vẽ đè đúng chỗ) + chi tiết hàng đang chọn =====
                 Item {
-                    id: kr
-                    visible: root.page === "keys" && root.hasScope
-                    x: card.m + card.px(340) + card.px(30)
-                    y: card.px(76)
-                    width: card.width - x - card.m
-                    height: scopeList.height
-
+                    id: sDet
+                    x: card.wA + card.wB + 2 * card.gg; width: card.wC; height: tp.height
                     Rectangle { width: parent.width; height: 1; color: th.ink }
-                    Text {
-                        y: card.px(8)
-                        text: "KEYS / " + root.scopeName
-                        color: th.ink
-                        font.family: root.fontTitle; font.pixelSize: card.fs(24); font.bold: true
-                    }
-                    Text {
-                        anchors.right: parent.right; y: card.px(14)
-                        text: root.keyDirty ? "DRAFT" : (root.scopeTag("keys", root.scopeId) === "DEFAULT" ? "DEFAULT" : "SAVED")
-                        color: th.soft
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
-                    }
-
-                    ListView {
-                        id: keyList
-                        y: card.px(46); width: parent.width; height: card.px(320)
-                        clip: true
-                        interactive: false
-                        model: root.kbList
-                        currentIndex: root.keySel
-                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
-                        delegate: Item {
-                            id: krow
-                            required property int index
-                            required property var modelData
-                            readonly property bool on: index === root.keySel
-                            readonly property bool locked: modelData.locked === true
-                            readonly property bool changed: !locked && root.keyDraft[modelData.action] !== undefined
-                            readonly property bool conf: root.keyConf[modelData.action] !== undefined
-                            readonly property bool capHere: on && root.capturing
-                            width: keyList.width; height: card.px(34)
-                            Rectangle {
-                                anchors.fill: parent; anchors.bottomMargin: 1
-                                color: krow.on ? th.ink : (krm.containsMouse ? th.wash : "transparent")
-                            }
-                            Text {
-                                x: card.px(14); anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(170); elide: Text.ElideRight
-                                text: krow.modelData.label
-                                color: krow.on ? th.paper : th.ink
-                                font.family: root.fontLabel; font.pixelSize: card.fs(16); font.bold: true
-                            }
-                            Text {
-                                x: card.px(196); anchors.verticalCenter: parent.verticalCenter
-                                text: krow.modelData.action
-                                color: krow.on ? th.paper : th.soft
-                                font.family: root.fontData; font.pixelSize: card.fs(12)
-                            }
-                            Text {
-                                anchors.right: keycap.left; anchors.rightMargin: card.px(10)
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: krow.locked ? "LOCK" : (krow.changed ? ("def " + krow.modelData.default) : "")
-                                color: krow.on ? th.paper : th.soft
-                                font.family: root.fontData; font.pixelSize: card.fs(12)
-                            }
-                            Rectangle {
-                                id: keycap
-                                anchors.right: parent.right; anchors.rightMargin: card.px(12)
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(104); height: card.px(24)
-                                color: krow.capHere ? th.paper : "transparent"
-                                border.width: krow.conf ? 2 : 1
-                                border.color: krow.conf ? th.danger : (krow.on ? th.paper : th.ink)
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: krow.capHere ? "PRESS KEY" : root.keyShown(krow.modelData).toUpperCase()
-                                    color: krow.capHere ? th.ink : (krow.on ? th.paper : th.ink)
-                                    font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true
-                                }
-                            }
-                            MouseArea {
-                                id: krm
-                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: { if (root.keySel === krow.index) root.startCapture(); else { root.keySel = krow.index; root.capturing = false; root.capMsg = "" } }
-                            }
+                    Item {
+                        id: detPanel
+                        y: card.dashPvY + card.pvH + card.gg
+                        width: parent.width; height: parent.height - y
+                        Rectangle { width: parent.width; height: 1; color: th.ink }
+                        Text {
+                            x: card.px(2); y: card.px(10)
+                            text: "DETAIL"; color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
-                    }
-
-                    Rectangle { y: card.px(374); width: parent.width; height: 1; color: th.rule }
-                    Text {
-                        y: card.px(382)
-                        width: parent.width; elide: Text.ElideRight
-                        readonly property var cm: (root.curKb !== null && root.keyConf[root.curKb.action] !== undefined) ? root.keyConf[root.curKb.action] : []
-                        text: root.capMsg !== "" ? root.capMsg
-                              : (root.capturing ? ("ĐANG GÁN: " + (root.curKb ? root.curKb.action : ""))
-                              : (cm.length > 0 ? ("CẢNH BÁO: " + cm.join("; "))
-                              : (root.keyConfCount > 0 ? (root.keyConfCount + " ACTION CÓ CẢNH BÁO") : "KHÔNG TRÙNG PHÍM")))
-                        color: (root.capMsg !== "" || cm.length > 0 || root.keyConfCount > 0) ? th.danger : th.ink
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: root.capMsg !== "" || cm.length > 0
-                    }
-                    Text {
-                        y: card.px(404)
-                        width: parent.width; elide: Text.ElideRight
-                        text: root.applyErr !== "" ? (root.applyMsg + "  " + root.applyErr) : root.applyMsg
-                        color: root.applyOk ? th.ink : th.danger
-                        font.family: root.fontData; font.pixelSize: card.fs(13)
-                    }
-                }
-
-                // ---------- pane OPTIONS ----------
-                Item {
-                    id: orp
-                    visible: (root.page === "options" || root.page === "objects") && root.hasScope
-                    x: card.m + card.px(340) + card.px(30)
-                    y: card.px(76)
-                    width: card.width - x - card.m
-                    height: scopeList.height
-
-                    Rectangle { width: parent.width; height: 1; color: th.ink }
-                    Text {
-                        y: card.px(8)
-                        text: (root.page === "objects" ? "OBJECTS / " : "OPTIONS / ") + root.scopeName
-                        color: th.ink
-                        font.family: root.fontTitle; font.pixelSize: card.fs(24); font.bold: true
-                    }
-                    Text {
-                        anchors.right: parent.right; y: card.px(14)
-                        text: root.optDirty ? "DRAFT" : (root.scopeTag(root.page, root.scopeId) === "DEFAULT" ? "DEFAULT" : "SAVED")
-                        color: th.soft
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
-                    }
-
-                    ListView {
-                        id: optListView
-                        y: card.px(46); width: parent.width; height: card.px(320)
-                        clip: true
-                        interactive: false
-                        model: root.optList
-                        currentIndex: root.optSel
-                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
-                        delegate: Item {
-                            id: orow
-                            required property int index
-                            required property var modelData
-                            readonly property bool on: index === root.optSel
-                            readonly property bool locked: modelData.locked === true
-                            readonly property bool changed: !locked && root.optDraft[modelData.key] !== undefined
-                            readonly property bool conf: root.optConf[modelData.key] !== undefined
-                            readonly property bool editHere: on && root.optEditing
-                            width: optListView.width; height: card.px(34)
-                            Rectangle {
-                                anchors.fill: parent; anchors.bottomMargin: 1
-                                color: orow.on ? th.ink : (orm.containsMouse ? th.wash : "transparent")
-                            }
-                            Text {
-                                x: card.px(14); anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(200); elide: Text.ElideRight
-                                text: orow.modelData.label
-                                color: orow.on ? th.paper : th.ink
-                                font.family: root.fontLabel; font.pixelSize: card.fs(15); font.bold: true
-                            }
-                            Text {
-                                anchors.right: ocap.left; anchors.rightMargin: card.px(10)
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(130); horizontalAlignment: Text.AlignRight; elide: Text.ElideRight
-                                text: orow.locked ? "LOCK" : (orow.changed ? ("def " + ce.optFormat(orow.modelData, orow.modelData.default)) : "")
-                                color: orow.on ? th.paper : th.soft
-                                font.family: root.fontData; font.pixelSize: card.fs(12)
-                            }
-                            Rectangle {
-                                id: ocap
-                                anchors.right: parent.right; anchors.rightMargin: card.px(12)
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: card.px(190); height: card.px(24)
-                                color: orow.editHere ? th.paper : "transparent"
-                                border.width: orow.conf ? 2 : 1
-                                border.color: orow.conf ? th.danger : (orow.on ? th.paper : th.ink)
-                                Text {
-                                    anchors.fill: parent; anchors.leftMargin: card.px(6); anchors.rightMargin: card.px(6)
-                                    verticalAlignment: Text.AlignVCenter
-                                    horizontalAlignment: orow.editHere ? Text.AlignLeft : Text.AlignHCenter
-                                    elide: orow.editHere ? Text.ElideLeft : Text.ElideRight
-                                    text: orow.editHere ? (root.optBuf + "_") : ce.optFormat(orow.modelData, root.optShown(orow.modelData))
-                                    color: orow.editHere ? th.ink : (orow.on ? th.paper : th.ink)
-                                    font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true
-                                }
-                            }
-                            MouseArea {
-                                id: orm
-                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    if (root.optSel === orow.index) { if (!root.optEditing) root.enterOpt() }
-                                    else { root.optEditing = false; root.optSel = orow.index; root.optMsg = "" }
+                        Text {
+                            anchors.right: parent.right; y: card.px(10)
+                            text: root.secTitle(root.page); color: th.soft
+                            font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
+                        }
+                        // bảng màu dẫn xuất của bản nháp theme (chỉ khi đang ở section THEME)
+                        Row {
+                            y: card.px(36)
+                            visible: root.page === "theme"
+                            spacing: card.px(6)
+                            Repeater {
+                                model: [root.curDerived.paper, root.curDerived.ink, root.curDerived.soft, root.curDerived.rule, root.curDerived.ghostB]
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    width: Math.floor((detPanel.width - 4 * card.px(6)) / 5); height: card.px(30)
+                                    color: modelData; border.width: 1; border.color: th.ink
                                 }
                             }
                         }
-                    }
-
-                    Rectangle { y: card.px(374); width: parent.width; height: 1; color: th.rule }
-                    Text {
-                        y: card.px(382)
-                        width: parent.width; elide: Text.ElideRight
-                        readonly property var cm: (root.curOpt !== null && root.optConf[root.curOpt.key] !== undefined) ? root.optConf[root.curOpt.key] : []
-                        text: root.optMsg !== "" ? root.optMsg
-                              : (cm.length > 0 ? ("CẢNH BÁO: " + cm.join("; "))
-                              : ce.optHint(root.curOpt))
-                        color: (root.optMsg !== "" || cm.length > 0) ? th.danger : th.ink
-                        font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: root.optMsg !== "" || cm.length > 0
-                    }
-                    Text {
-                        y: card.px(404)
-                        width: parent.width; elide: Text.ElideRight
-                        text: root.applyErr !== "" ? (root.applyMsg + "  " + root.applyErr) : root.applyMsg
-                        color: root.applyOk ? th.ink : th.danger
-                        font.family: root.fontData; font.pixelSize: card.fs(13)
+                        Column {
+                            y: root.page === "theme" ? card.px(80) : card.px(38)
+                            width: parent.width
+                            spacing: card.px(8)
+                            Repeater {
+                                model: root.detailLines
+                                delegate: Text {
+                                    required property var modelData
+                                    width: detPanel.width
+                                    wrapMode: Text.WordWrap
+                                    text: modelData.t
+                                    color: modelData.bad ? th.danger : th.ink
+                                    font.family: root.fontData; font.pixelSize: card.fs(14); font.bold: modelData.bad
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2214,12 +2798,12 @@ ShellRoot {
                 }
             }
 
-            // ---------- PREVIEW (góc dưới trái; V bật/tắt) ----------
+            // ---------- PREVIEW (luôn bật, đầu cột C) ----------
             Item {
                 id: pvFrame
-                visible: root.previewOn && root.page !== "store"
-                x: card.m
-                y: card.px(76) + (card.height - card.px(76) - card.px(96)) - card.pvH
+                visible: root.page !== "store"
+                x: card.gx + card.wA + card.wB + 2 * card.gg
+                y: card.gy + card.dashPvY
                 width: card.pvW; height: card.pvH
 
                 Text {
@@ -2228,13 +2812,6 @@ ShellRoot {
                     text: root.pvApp === null ? "NO PREVIEW FOR THIS SCOPE"
                           : (pvLoader.status === Loader.Error ? "PREVIEW UNAVAILABLE (VIEW.QML)"
                           : ("PREVIEW   " + String(root.pvApp.name).toUpperCase() + (root.pvFn !== "" ? (" / " + root.pvFn.toUpperCase()) : "")))
-                    color: th.soft
-                    font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
-                }
-                Text {
-                    anchors.bottom: parent.top; anchors.bottomMargin: card.px(6)
-                    anchors.right: parent.right
-                    text: "V HIDE"
                     color: th.soft
                     font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                 }
@@ -2251,7 +2828,7 @@ ShellRoot {
                         Loader {
                             id: pvLoader
                             anchors.fill: parent
-                            active: root.previewOn && root.page !== "store" && root.pvApp !== null
+                            active: root.page !== "store" && root.pvApp !== null
                             source: root.pvApp !== null ? encodeURI("file://" + root.pvApp.dir + "/View.qml") : ""
                             onLoaded: root.pvApply()
                         }
@@ -2323,6 +2900,12 @@ ShellRoot {
                 text: root.footerText
                 color: th.soft
                 font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 1
+            }
+            Text {
+                anchors.right: parent.right; anchors.rightMargin: card.m; y: card.height - card.px(52)
+                visible: root.page === "apps"
+                text: root.hexText; color: th.soft
+                font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 1.5
             }
         }
     }

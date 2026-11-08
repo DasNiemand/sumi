@@ -97,14 +97,15 @@ Item {
         Shape {
             anchors.fill: parent
             ShapePath {
+                id: bodySP
                 readonly property real c: px(36)
                 fillColor: th.paper
                 strokeColor: th.ink
                 strokeWidth: 1.5
                 startX: 0; startY: 0
                 PathLine { x: box.width; y: 0 }
-                PathLine { x: box.width; y: box.height - c }
-                PathLine { x: box.width - c; y: box.height }
+                PathLine { x: box.width; y: box.height - bodySP.c }
+                PathLine { x: box.width - bodySP.c; y: box.height }
                 PathLine { x: 0; y: box.height }
                 PathLine { x: 0; y: 0 }
             }
