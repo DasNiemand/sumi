@@ -217,6 +217,8 @@ ShellRoot {
     // ===== Trang cài đặt: MỘT màn hình cho mỗi phạm vi (GLOBAL / HUB / từng app) gồm THEME + FONT + KEYS + OPTIONS (có OBJECTS) =====
     // `page` là section đang focus (theme | font | keys | options); mọi section áp dụng cho phạm vi hiện tại hiện cùng lúc.
     property string page: "apps"            // apps | store | theme | font | keys | options
+    property int pageTok: 0                 // tăng mỗi lần đổi trang/section: các tiêu đề giải mã lại (scramble)
+    onPageChanged: pageTok++
     readonly property var secIds: ["theme", "font", "keys", "options"]
     readonly property bool inSettings: secIds.indexOf(page) >= 0
     property int scopeSel: 0
@@ -1343,10 +1345,10 @@ ShellRoot {
                         font.family: root.fontData; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 3
                     }
                 }
-                Text {
+                ScrambleText {
                     x: card.px(168); anchors.verticalCenter: parent.verticalCenter
                     visible: !root.inSettings
-                    text: root.page === "store" ? "STORE" : "APPS  /  DASHBOARD"; color: th.soft
+                    full: root.page === "store" ? "STORE" : "APPS  /  DASHBOARD"; trigger: root.pageTok; color: th.soft
                     font.family: root.fontData; font.pixelSize: card.fs(14); font.letterSpacing: 2
                 }
                 Row {
@@ -1362,9 +1364,10 @@ ShellRoot {
                             width: card.px(112); height: card.px(26)
                             color: on ? th.ink : "transparent"
                             border.width: 1; border.color: on ? th.ink : th.rule
-                            Text {
+                            ScrambleText {
                                 anchors.centerIn: parent
-                                text: (index + 1) + " " + modelData.toUpperCase() + (root.tabDirty(modelData) ? " *" : "")
+                                full: (index + 1) + " " + modelData.toUpperCase() + (root.tabDirty(modelData) ? " *" : "")
+                                active: parent.on
                                 color: parent.on ? th.paper : th.ink
                                 font.family: root.fontData; font.pixelSize: card.fs(13); font.bold: true; font.letterSpacing: 1.5
                             }
@@ -1404,9 +1407,9 @@ ShellRoot {
                     id: aCol
                     x: 0; width: card.wA; height: dash.height
                     Rectangle { width: parent.width; height: 1; color: th.ink }
-                    Text {
+                    ScrambleText {
                         x: card.px(2); y: card.px(10)
-                        text: "APPS"; color: th.soft
+                        full: "APPS"; trigger: root.pageTok; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                     }
                     Text {
@@ -1477,14 +1480,14 @@ ShellRoot {
                         y: logPanel.y - dash.pg - dash.regH
                         width: parent.width; height: dash.regH
                         Rectangle { width: parent.width; height: 1; color: th.ink }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(10)
-                            text: "REGISTRY"; color: th.soft
+                            full: "REGISTRY"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
-                        Text {
+                        ScrambleText {
                             anchors.right: parent.right; y: card.px(10)
-                            text: "G  OPEN STORE"; color: th.soft
+                            full: "G  OPEN STORE"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                         }
                         Repeater {
@@ -1521,9 +1524,9 @@ ShellRoot {
                         y: parent.height - dash.logH
                         width: parent.width; height: dash.logH
                         Rectangle { width: parent.width; height: 1; color: th.ink }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(10)
-                            text: "LOG"; color: th.soft
+                            full: "LOG"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
                         Text {
@@ -1544,10 +1547,10 @@ ShellRoot {
                                 }
                             }
                         }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(36)
                             visible: root.logLines.length === 0
-                            text: "NO LOG ENTRIES"; color: th.soft
+                            full: "NO LOG ENTRIES"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                         }
                     }
@@ -1586,9 +1589,9 @@ ShellRoot {
                     }
 
                     // DETAILS: lưới 2 cột x 4 hàng
-                    Text {
+                    ScrambleText {
                         x: card.px(2); y: card.px(194)
-                        text: "DETAILS"; color: th.soft
+                        full: "DETAILS"; trigger: root.pageTok; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                     }
                     Rectangle { y: card.px(216); width: parent.width; height: 1; color: th.rule }
@@ -1622,10 +1625,10 @@ ShellRoot {
                         text: root.cur && root.cur.kind === "daemon" ? "FUNCTIONS" : "TEST RUN"; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                     }
-                    Text {
+                    ScrambleText {
                         anchors.right: parent.right; y: card.px(374)
                         visible: root.cur !== null && root.cur.kind === "daemon"
-                        text: "A / D  SELECT"; color: th.soft
+                        full: "A / D  SELECT"; trigger: root.pageTok; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                     }
                     Row {
@@ -1695,14 +1698,14 @@ ShellRoot {
                     }
 
                     // KEYBINDS của app (phím hiệu lực = mặc định + phần người dùng đổi)
-                    Text {
+                    ScrambleText {
                         x: card.px(2); y: card.px(508)
-                        text: "KEYBINDS"; color: th.soft
+                        full: "KEYBINDS"; trigger: root.pageTok; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                     }
-                    Text {
+                    ScrambleText {
                         anchors.right: parent.right; y: card.px(508)
-                        text: "K  EDIT"; color: th.soft
+                        full: "K  EDIT"; trigger: root.pageTok; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                     }
                     Flow {
@@ -1807,9 +1810,9 @@ ShellRoot {
                         y: card.dashPvY + card.pvH + card.gg
                         width: parent.width; height: card.px(184)
                         Rectangle { width: parent.width; height: 1; color: th.ink }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(10)
-                            text: "SYSTEM"; color: th.soft
+                            full: "SYSTEM"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
                         Text {
@@ -1862,14 +1865,14 @@ ShellRoot {
                         y: sysPanel.y + sysPanel.height + card.gg
                         width: parent.width; height: card.px(202)
                         Rectangle { width: parent.width; height: 1; color: th.ink }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(10)
-                            text: "SHORTCUTS"; color: th.soft
+                            full: "SHORTCUTS"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
-                        Text {
+                        ScrambleText {
                             anchors.right: parent.right; y: card.px(10)
-                            text: "W/S APP"; color: th.soft
+                            full: "W/S APP"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                         }
                         Repeater {
@@ -1924,14 +1927,14 @@ ShellRoot {
                     id: sCol
                     width: card.wA; height: tp.height
                     Rectangle { width: parent.width; height: 1; color: th.ink }
-                    Text {
+                    ScrambleText {
                         x: card.px(2); y: card.px(10)
-                        text: "SCOPE"; color: th.soft
+                        full: "SCOPE"; trigger: root.pageTok; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                     }
-                    Text {
+                    ScrambleText {
                         anchors.right: parent.right; y: card.px(8)
-                        text: "Q / E"; color: th.soft
+                        full: "Q / E"; trigger: root.pageTok; color: th.soft
                         font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                     }
                     ListView {
@@ -1983,14 +1986,14 @@ ShellRoot {
                         y: stPanel.y - tp.pg - tp.secH
                         width: parent.width; height: tp.secH
                         Rectangle { width: parent.width; height: 1; color: th.ink }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(10)
-                            text: "SECTIONS"; color: th.soft
+                            full: "SECTIONS"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
-                        Text {
+                        ScrambleText {
                             anchors.right: parent.right; y: card.px(10)
-                            text: "TAB"; color: th.soft
+                            full: "TAB"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                         }
                         Repeater {
@@ -2035,14 +2038,14 @@ ShellRoot {
                         y: parent.height - tp.stH
                         width: parent.width; height: tp.stH
                         Rectangle { width: parent.width; height: 1; color: th.ink }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(10)
-                            text: "STATUS"; color: th.soft
+                            full: "STATUS"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
-                        Text {
+                        ScrambleText {
                             anchors.right: parent.right; y: card.px(10)
-                            text: "SPACE  APPLY"; color: th.soft
+                            full: "SPACE  APPLY"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(12); font.letterSpacing: 1.5
                         }
                         Repeater {
@@ -2078,10 +2081,10 @@ ShellRoot {
                     id: sMain
                     x: card.wA + card.gg; width: card.wB; height: tp.height
                     Rectangle { width: parent.width; height: 1; color: th.ink }
-                    Text {
+                    ScrambleText {
                         x: card.px(2); y: card.px(6)
                         width: parent.width - card.px(140); elide: Text.ElideRight
-                        text: "SETTINGS / " + root.scopeName; color: th.ink
+                        full: "SETTINGS / " + root.scopeName; color: th.ink
                         font.family: root.fontTitle; font.pixelSize: card.fs(28); font.bold: true
                     }
                     Text {
@@ -2117,9 +2120,9 @@ ShellRoot {
                             Component {
                                 id: headC
                                 Item {
-                                    Text {
+                                    ScrambleText {
                                         x: card.px(2); anchors.bottom: parent.bottom; anchors.bottomMargin: card.px(6)
-                                        text: root.secTitle(sr.sec); color: th.ink
+                                        full: root.secTitle(sr.sec); trigger: root.pageTok; color: th.ink
                                         font.family: root.fontLabel; font.pixelSize: card.fs(15); font.bold: true; font.letterSpacing: 3
                                     }
                                     Text {
@@ -2407,8 +2410,11 @@ ShellRoot {
                         color: th.paper; border.width: 2; border.color: th.ink
                         readonly property var curItem: root.pickItems.length > 0 ? root.pickItems[Math.max(0, Math.min(root.pickIdx, root.pickItems.length - 1))] : null
                         readonly property string inhFam: {
+                            if (root.pickRole === "") return ""
                             const v = root.fontInh[root.pickRole]
-                            return v !== "" ? v : (root.pickRole === "kanji" ? Qt.application.font.family : ce.fontDefaults[root.pickRole])
+                            if (v !== undefined && v !== "") return v
+                            const d = root.pickRole === "kanji" ? Qt.application.font.family : ce.fontDefaults[root.pickRole]
+                            return d === undefined ? "" : d
                         }
                         readonly property string prevFam: (curItem !== null && !curItem.isDefault) ? curItem.name : inhFam
                         Text {
@@ -2487,9 +2493,9 @@ ShellRoot {
                         y: card.dashPvY + card.pvH + card.gg
                         width: parent.width; height: parent.height - y
                         Rectangle { width: parent.width; height: 1; color: th.ink }
-                        Text {
+                        ScrambleText {
                             x: card.px(2); y: card.px(10)
-                            text: "DETAIL"; color: th.soft
+                            full: "DETAIL"; trigger: root.pageTok; color: th.soft
                             font.family: root.fontData; font.pixelSize: card.fs(13); font.letterSpacing: 2
                         }
                         Text {

@@ -155,5 +155,10 @@ eq(['sCol', 'sMain', 'sDet', 'scopeList', 'setList', 'secPanel', 'stPanel', 'det
 eq(['headC', 'presetC', 'sliderC', 'fontC', 'keyC', 'optC'].every(id => new RegExp('Component \\{\\s+id: ' + id + '\\b').test(tpSrc)), true, 'đủ component hàng');
 eq(/sourceComponent: sr\.isHead \? headC/.test(tpSrc), true, 'Loader chọn component theo loại hàng');
 eq(!/\.\.\.tabIds|root\.tabIds|\bcycleTab\b|scopeListFor/.test(hub), true, 'không còn tabIds / cycleTab / scopeListFor');
+// ---- transition scramble giữa các trang ----
+eq(/onPageChanged: pageTok\+\+/.test(hub), true, 'đổi page tăng pageTok');
+eq((hub.match(/trigger: root\.pageTok/g) || []).length >= 15, true, 'tiêu đề panel giải mã lại theo pageTok');
+eq(/full: root\.secTitle\(sr\.sec\); trigger: root\.pageTok/.test(hub), true, 'tiêu đề section có trigger');
+eq(/onTriggerChanged: \{ if \(active\) scramble\(\) \}/.test(fs.readFileSync(hubPath.replace(/hub\/shell\.qml$/, 'lib/ScrambleText.qml'), 'utf8')), true, 'ScrambleText có trigger');
 console.log(f === 0 ? `TAT CA OK (${n} kiem tra, settings)` : `${f}/${n} LOI`);
 process.exit(f ? 1 : 0);

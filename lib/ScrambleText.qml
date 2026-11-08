@@ -10,6 +10,7 @@ Text {
     property int steps: 10                // số nhịp để giải mã xong (mỗi nhịp 36ms)
     property string glyphs: "#@%&$0123456789ABCDEF<>/|+=*"
     property int tick: steps
+    property int trigger: 0               // đổi giá trị này để giải mã lại cùng một chuỗi (chuyển trang)
 
     function render() {
         const n = full.length
@@ -36,6 +37,7 @@ Text {
 
     onFullChanged: { if (active) scramble(); else settle() }
     onActiveChanged: { if (active) scramble(); else settle() }
+    onTriggerChanged: { if (active) scramble() }
     Component.onCompleted: settle()
 
     Timer {
